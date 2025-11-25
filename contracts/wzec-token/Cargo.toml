@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-near-sdk = { workspace = true }
+near-sdk = { workspace = true, features = ["legacy"] }
 near-contract-standards = { workspace = true }
 serde = { workspace = true }
 borsh = { workspace = true }

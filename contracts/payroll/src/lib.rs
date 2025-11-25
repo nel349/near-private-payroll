@@ -14,7 +14,7 @@ use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, UnorderedMap, Vector};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey, PanicOnDefault, Promise, PromiseOrValue};
+use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey, NearSchema, PanicOnDefault, Promise, PromiseOrValue};
 use sha2::{Digest, Sha256};
 
 /// Storage keys for collections
@@ -33,7 +33,7 @@ pub enum StorageKey {
 }
 
 /// Employment status
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub enum EmploymentStatus {
@@ -43,7 +43,7 @@ pub enum EmploymentStatus {
 }
 
 /// Employee data (sensitive fields encrypted)
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub struct Employee {
@@ -91,7 +91,7 @@ pub struct Disclosure {
     pub active: bool,
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub enum DisclosureType {
@@ -106,7 +106,7 @@ pub enum DisclosureType {
 }
 
 /// Income proof types (matching RISC Zero circuits)
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub enum IncomeProofType {
@@ -121,7 +121,7 @@ pub enum IncomeProofType {
 }
 
 /// Verified income proof record
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub struct VerifiedIncomeProof {
@@ -232,7 +232,7 @@ impl PayrollContract {
     ) {
         self.assert_owner();
         assert!(
-            !self.employees.contains_key(&employee_id),
+            self.employees.get(&employee_id).is_none(),
             "Employee already exists"
         );
 
@@ -375,7 +375,7 @@ impl PayrollContract {
     ) {
         let employee_id = env::predecessor_account_id();
         assert!(
-            self.employees.contains_key(&employee_id),
+            self.employees.get(&employee_id).is_some(),
             "Not an employee"
         );
 
@@ -448,7 +448,7 @@ impl PayrollContract {
     ) {
         let employee_id = env::predecessor_account_id();
         assert!(
-            self.employees.contains_key(&employee_id),
+            self.employees.get(&employee_id).is_some(),
             "Not an employee"
         );
 
@@ -661,6 +661,6 @@ mod tests {
         );
 
         assert_eq!(contract.total_employees, 1);
-        assert!(contract.employees.contains_key(&employee));
+        assert!(contract.employees.get(&employee).is_some());
     }
 }

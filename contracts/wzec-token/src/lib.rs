@@ -17,16 +17,14 @@
 use near_contract_standards::fungible_token::metadata::{
     FungibleTokenMetadata, FungibleTokenMetadataProvider, FT_METADATA_SPEC,
 };
-use near_contract_standards::fungible_token::{FungibleToken, FungibleTokenCore};
-use near_contract_standards::storage_management::{
-    StorageBalance, StorageBalanceBounds, StorageManagement,
-};
+use near_contract_standards::fungible_token::FungibleToken;
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::LazyOption;
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
+use near_sdk::serde_json;
 use near_sdk::{
-    env, log, near_bindgen, AccountId, BorshStorageKey, NearToken, PanicOnDefault, Promise,
+    env, log, near, near_bindgen, AccountId, BorshStorageKey, NearToken, PanicOnDefault, Promise,
     PromiseOrValue,
 };
 
@@ -216,8 +214,43 @@ impl WZecToken {
 // Implement NEP-141 FungibleTokenCore
 near_contract_standards::impl_fungible_token_core!(WZecToken, token);
 
-// Implement NEP-145 StorageManagement
-near_contract_standards::impl_fungible_token_storage!(WZecToken, token);
+// Implement NEP-145 StorageManagement manually (macro has type mismatch bug)
+use near_contract_standards::storage_management::{StorageBalance, StorageBalanceBounds, StorageManagement};
+
+#[near]
+impl StorageManagement for WZecToken {
+    #[payable]
+    fn storage_deposit(
+        &mut self,
+        account_id: Option<AccountId>,
+        registration_only: Option<bool>,
+    ) -> StorageBalance {
+        self.token.storage_deposit(account_id, registration_only)
+    }
+
+    #[payable]
+    fn storage_withdraw(&mut self, amount: Option<NearToken>) -> StorageBalance {
+        self.token.storage_withdraw(amount)
+    }
+
+    #[payable]
+    fn storage_unregister(&mut self, force: Option<bool>) -> bool {
+        #[allow(unused_variables)]
+        if let Some((account_id, balance)) = self.token.internal_storage_unregister(force) {
+            true
+        } else {
+            false
+        }
+    }
+
+    fn storage_balance_bounds(&self) -> StorageBalanceBounds {
+        self.token.storage_balance_bounds()
+    }
+
+    fn storage_balance_of(&self, account_id: AccountId) -> Option<StorageBalance> {
+        self.token.storage_balance_of(account_id)
+    }
+}
 
 // Implement FungibleTokenMetadataProvider
 #[near_bindgen]
