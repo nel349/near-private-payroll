@@ -1,0 +1,21 @@
+[package]
+name = "zk-verifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+serde = { workspace = true }
+borsh = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+# RISC Zero verifier (when available for NEAR)
+# risc0-zkvm = { workspace = true, features = ["verify"] }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
