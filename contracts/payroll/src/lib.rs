@@ -19,8 +19,77 @@ use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, UnorderedMap, Vector};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey, NearSchema, PanicOnDefault, Promise, PromiseOrValue};
+use near_sdk::{env, ext_contract, near_bindgen, AccountId, BorshStorageKey, Gas, NearSchema, PanicOnDefault, Promise, PromiseOrValue, PromiseError};
 use sha2::{Digest, Sha256};
+
+/// Gas constants for cross-contract calls
+const GAS_FOR_VERIFY: Gas = Gas::from_tgas(50);
+const GAS_FOR_CALLBACK: Gas = Gas::from_tgas(30);
+
+// ==================== EXTERNAL INTERFACES ====================
+
+/// External interface for zk-verifier contract
+#[ext_contract(ext_zk_verifier)]
+pub trait ExtZkVerifier {
+    fn verify_income_threshold(
+        &mut self,
+        receipt: Vec<u8>,
+        expected_threshold: u64,
+        expected_commitment: [u8; 32],
+    ) -> IncomeThresholdOutput;
+
+    fn verify_income_range(
+        &mut self,
+        receipt: Vec<u8>,
+        expected_min: u64,
+        expected_max: u64,
+        expected_commitment: [u8; 32],
+    ) -> IncomeRangeOutput;
+
+    fn verify_credit_score(
+        &mut self,
+        receipt: Vec<u8>,
+        expected_threshold: u32,
+        expected_commitment: [u8; 32],
+    ) -> CreditScoreOutput;
+}
+
+/// Output from income threshold verification
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct IncomeThresholdOutput {
+    pub threshold: u64,
+    pub meets_threshold: bool,
+    pub payment_count: u32,
+    pub history_commitment: [u8; 32],
+    pub verified: bool,
+}
+
+/// Output from income range verification
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct IncomeRangeOutput {
+    pub min: u64,
+    pub max: u64,
+    pub in_range: bool,
+    pub payment_count: u32,
+    pub history_commitment: [u8; 32],
+    pub verified: bool,
+}
+
+/// Output from credit score verification
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct CreditScoreOutput {
+    pub threshold: u32,
+    pub meets_threshold: bool,
+    pub payment_count: u32,
+    pub history_commitment: [u8; 32],
+    pub verified: bool,
+}
 
 /// Storage keys for collections
 #[derive(BorshStorageKey, BorshSerialize)]
@@ -39,6 +108,33 @@ pub enum StorageKey {
     UsedReceipts,
     /// Authorized auditors (only for FullAudit disclosure, not for income proofs)
     AuthorizedAuditors,
+    /// Pending proofs awaiting verification callback
+    PendingProofs,
+}
+
+/// Pending proof data (stored while waiting for zk-verifier callback)
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct PendingProof {
+    /// Employee who submitted
+    pub employee_id: AccountId,
+    /// Type of proof
+    pub proof_type: IncomeProofType,
+    /// Threshold (for threshold proofs)
+    pub threshold: Option<u64>,
+    /// Range min (for range proofs)
+    pub range_min: Option<u64>,
+    /// Range max (for range proofs)
+    pub range_max: Option<u64>,
+    /// History commitment
+    pub history_commitment: [u8; 32],
+    /// Receipt hash
+    pub receipt_hash: [u8; 32],
+    /// Expiration days
+    pub expires_in_days: u32,
+    /// Submission timestamp
+    pub submitted_at: u64,
 }
 
 /// Employment status
@@ -202,6 +298,8 @@ pub struct PayrollContract {
     pub used_receipts: LookupMap<[u8; 32], bool>,
     /// Authorized auditors (ONLY for FullAudit disclosure, NOT for income proofs)
     pub authorized_auditors: UnorderedMap<AccountId, AuthorizedAuditor>,
+    /// Pending proofs (awaiting zk-verifier callback)
+    pub pending_proofs: LookupMap<[u8; 32], PendingProof>,
 
     /// Company balance (deposited wZEC)
     pub company_balance: u128,
@@ -228,6 +326,7 @@ impl PayrollContract {
             employee_income_proofs: LookupMap::new(StorageKey::EmployeeIncomeProofs),
             used_receipts: LookupMap::new(StorageKey::UsedReceipts),
             authorized_auditors: UnorderedMap::new(StorageKey::AuthorizedAuditors),
+            pending_proofs: LookupMap::new(StorageKey::PendingProofs),
             company_balance: 0,
             total_employees: 0,
             total_payments: 0,
@@ -463,17 +562,18 @@ impl PayrollContract {
     //
     // These operations use RISC Zero STARK proofs for TRUSTLESS verification.
     // No auditor or trusted third party is required.
-    // The contract verifies proofs directly on-chain.
+    // The contract verifies proofs via cross-contract calls to zk-verifier.
 
     /// Submit an income proof for verification (TRUSTLESS)
     /// Called directly by employee with RISC Zero receipt
+    /// Makes cross-contract call to zk-verifier and handles response via callback
     ///
     /// # Arguments
     /// * `proof_type` - Type of income proof (AboveThreshold, InRange, etc.)
     /// * `threshold` - Threshold value for AboveThreshold/Average proofs
     /// * `range_min` - Minimum for InRange proofs
     /// * `range_max` - Maximum for InRange proofs
-    /// * `risc_zero_receipt` - STARK proof from RISC Zero
+    /// * `risc_zero_receipt` - STARK proof from RISC Zero (or Groth16 wrapped)
     /// * `history_commitment` - Commitment binding proof to payment history
     /// * `expires_in_days` - How long the proof should be valid
     pub fn submit_income_proof(
@@ -485,7 +585,7 @@ impl PayrollContract {
         risc_zero_receipt: Vec<u8>,
         history_commitment: [u8; 32],
         expires_in_days: u32,
-    ) {
+    ) -> Promise {
         let employee_id = env::predecessor_account_id();
         assert!(
             self.employees.get(&employee_id).is_some(),
@@ -503,8 +603,11 @@ impl PayrollContract {
 
         // Validate proof parameters
         match proof_type {
-            IncomeProofType::AboveThreshold | IncomeProofType::AverageAboveThreshold | IncomeProofType::CreditScore => {
+            IncomeProofType::AboveThreshold | IncomeProofType::AverageAboveThreshold => {
                 assert!(threshold.is_some(), "Threshold required for this proof type");
+            }
+            IncomeProofType::CreditScore => {
+                assert!(threshold.is_some(), "Threshold required for credit score proof");
             }
             IncomeProofType::InRange => {
                 assert!(range_min.is_some() && range_max.is_some(), "Range required for InRange proof");
@@ -515,48 +618,238 @@ impl PayrollContract {
         // Verify history commitment matches on-chain payment history
         self.verify_history_commitment(&employee_id, &history_commitment);
 
-        // Verify the RISC Zero proof
-        // TODO: In production, this calls the zk-verifier contract
-        let (is_valid, result, payment_count) = self.verify_risc_zero_proof(
-            &risc_zero_receipt,
-            &proof_type,
-            threshold,
-            range_min,
-            range_max,
-            &history_commitment,
-        );
-        assert!(is_valid, "Invalid RISC Zero proof");
-
-        // Mark receipt as used (replay protection)
-        self.used_receipts.insert(&receipt_hash, &true);
-
-        // Create verified proof record
-        let verified_proof = VerifiedIncomeProof {
+        // Store pending proof (will be completed by callback)
+        let pending = PendingProof {
+            employee_id: employee_id.clone(),
             proof_type: proof_type.clone(),
             threshold,
             range_min,
             range_max,
-            result,
-            payment_count,
             history_commitment,
             receipt_hash,
-            verified_at: env::block_timestamp(),
-            expires_at: env::block_timestamp() + (expires_in_days as u64 * 24 * 60 * 60 * 1_000_000_000),
+            expires_in_days,
+            submitted_at: env::block_timestamp(),
         };
+        self.pending_proofs.insert(&receipt_hash, &pending);
 
-        // Store proof for employee (replace existing proof of same type)
-        let mut proofs = self.employee_income_proofs.get(&employee_id).unwrap_or_default();
-
-        // Remove existing proof of same type if present
-        proofs.retain(|p| p.proof_type != proof_type);
-        proofs.push(verified_proof);
-
-        self.employee_income_proofs.insert(&employee_id, &proofs);
+        // Mark receipt as used (replay protection)
+        self.used_receipts.insert(&receipt_hash, &true);
 
         env::log_str(&format!(
-            "Income proof ({:?}) submitted by {} - Result: {}",
-            proof_type, employee_id, result
+            "Submitting income proof ({:?}) to zk-verifier for {}",
+            proof_type, employee_id
         ));
+
+        // Make cross-contract call to zk-verifier based on proof type
+        match proof_type {
+            IncomeProofType::AboveThreshold | IncomeProofType::AverageAboveThreshold => {
+                ext_zk_verifier::ext(self.zk_verifier.clone())
+                    .with_static_gas(GAS_FOR_VERIFY)
+                    .verify_income_threshold(
+                        risc_zero_receipt,
+                        threshold.unwrap(),
+                        history_commitment,
+                    )
+                    .then(
+                        Self::ext(env::current_account_id())
+                            .with_static_gas(GAS_FOR_CALLBACK)
+                            .on_verify_income_threshold(receipt_hash)
+                    )
+            }
+            IncomeProofType::InRange => {
+                ext_zk_verifier::ext(self.zk_verifier.clone())
+                    .with_static_gas(GAS_FOR_VERIFY)
+                    .verify_income_range(
+                        risc_zero_receipt,
+                        range_min.unwrap(),
+                        range_max.unwrap(),
+                        history_commitment,
+                    )
+                    .then(
+                        Self::ext(env::current_account_id())
+                            .with_static_gas(GAS_FOR_CALLBACK)
+                            .on_verify_income_range(receipt_hash)
+                    )
+            }
+            IncomeProofType::CreditScore => {
+                // Credit score threshold is u32
+                let score_threshold = threshold.unwrap() as u32;
+                ext_zk_verifier::ext(self.zk_verifier.clone())
+                    .with_static_gas(GAS_FOR_VERIFY)
+                    .verify_credit_score(
+                        risc_zero_receipt,
+                        score_threshold,
+                        history_commitment,
+                    )
+                    .then(
+                        Self::ext(env::current_account_id())
+                            .with_static_gas(GAS_FOR_CALLBACK)
+                            .on_verify_credit_score(receipt_hash)
+                    )
+            }
+        }
+    }
+
+    /// Callback for income threshold verification
+    #[private]
+    pub fn on_verify_income_threshold(
+        &mut self,
+        receipt_hash: [u8; 32],
+        #[callback_result] result: Result<IncomeThresholdOutput, PromiseError>,
+    ) {
+        let pending = self.pending_proofs.get(&receipt_hash)
+            .expect("Pending proof not found");
+
+        match result {
+            Ok(output) => {
+                if output.verified {
+                    // Create verified proof record
+                    let verified_proof = VerifiedIncomeProof {
+                        proof_type: pending.proof_type.clone(),
+                        threshold: Some(output.threshold),
+                        range_min: None,
+                        range_max: None,
+                        result: output.meets_threshold,
+                        payment_count: output.payment_count,
+                        history_commitment: output.history_commitment,
+                        receipt_hash,
+                        verified_at: env::block_timestamp(),
+                        expires_at: env::block_timestamp() + (pending.expires_in_days as u64 * 24 * 60 * 60 * 1_000_000_000),
+                    };
+
+                    // Store proof for employee
+                    let mut proofs = self.employee_income_proofs.get(&pending.employee_id).unwrap_or_default();
+                    proofs.retain(|p| p.proof_type != pending.proof_type);
+                    proofs.push(verified_proof);
+                    self.employee_income_proofs.insert(&pending.employee_id, &proofs);
+
+                    env::log_str(&format!(
+                        "Income threshold proof verified for {} - Result: {}",
+                        pending.employee_id, output.meets_threshold
+                    ));
+                } else {
+                    env::log_str(&format!(
+                        "Income threshold proof FAILED verification for {}",
+                        pending.employee_id
+                    ));
+                }
+            }
+            Err(e) => {
+                env::log_str(&format!(
+                    "Income threshold verification error for {}: {:?}",
+                    pending.employee_id, e
+                ));
+            }
+        }
+
+        // Clean up pending proof
+        self.pending_proofs.remove(&receipt_hash);
+    }
+
+    /// Callback for income range verification
+    #[private]
+    pub fn on_verify_income_range(
+        &mut self,
+        receipt_hash: [u8; 32],
+        #[callback_result] result: Result<IncomeRangeOutput, PromiseError>,
+    ) {
+        let pending = self.pending_proofs.get(&receipt_hash)
+            .expect("Pending proof not found");
+
+        match result {
+            Ok(output) => {
+                if output.verified {
+                    let verified_proof = VerifiedIncomeProof {
+                        proof_type: pending.proof_type.clone(),
+                        threshold: None,
+                        range_min: Some(output.min),
+                        range_max: Some(output.max),
+                        result: output.in_range,
+                        payment_count: output.payment_count,
+                        history_commitment: output.history_commitment,
+                        receipt_hash,
+                        verified_at: env::block_timestamp(),
+                        expires_at: env::block_timestamp() + (pending.expires_in_days as u64 * 24 * 60 * 60 * 1_000_000_000),
+                    };
+
+                    let mut proofs = self.employee_income_proofs.get(&pending.employee_id).unwrap_or_default();
+                    proofs.retain(|p| p.proof_type != pending.proof_type);
+                    proofs.push(verified_proof);
+                    self.employee_income_proofs.insert(&pending.employee_id, &proofs);
+
+                    env::log_str(&format!(
+                        "Income range proof verified for {} - Result: {}",
+                        pending.employee_id, output.in_range
+                    ));
+                } else {
+                    env::log_str(&format!(
+                        "Income range proof FAILED verification for {}",
+                        pending.employee_id
+                    ));
+                }
+            }
+            Err(e) => {
+                env::log_str(&format!(
+                    "Income range verification error for {}: {:?}",
+                    pending.employee_id, e
+                ));
+            }
+        }
+
+        self.pending_proofs.remove(&receipt_hash);
+    }
+
+    /// Callback for credit score verification
+    #[private]
+    pub fn on_verify_credit_score(
+        &mut self,
+        receipt_hash: [u8; 32],
+        #[callback_result] result: Result<CreditScoreOutput, PromiseError>,
+    ) {
+        let pending = self.pending_proofs.get(&receipt_hash)
+            .expect("Pending proof not found");
+
+        match result {
+            Ok(output) => {
+                if output.verified {
+                    let verified_proof = VerifiedIncomeProof {
+                        proof_type: pending.proof_type.clone(),
+                        threshold: Some(output.threshold as u64),
+                        range_min: None,
+                        range_max: None,
+                        result: output.meets_threshold,
+                        payment_count: output.payment_count,
+                        history_commitment: output.history_commitment,
+                        receipt_hash,
+                        verified_at: env::block_timestamp(),
+                        expires_at: env::block_timestamp() + (pending.expires_in_days as u64 * 24 * 60 * 60 * 1_000_000_000),
+                    };
+
+                    let mut proofs = self.employee_income_proofs.get(&pending.employee_id).unwrap_or_default();
+                    proofs.retain(|p| p.proof_type != pending.proof_type);
+                    proofs.push(verified_proof);
+                    self.employee_income_proofs.insert(&pending.employee_id, &proofs);
+
+                    env::log_str(&format!(
+                        "Credit score proof verified for {} - Result: {}",
+                        pending.employee_id, output.meets_threshold
+                    ));
+                } else {
+                    env::log_str(&format!(
+                        "Credit score proof FAILED verification for {}",
+                        pending.employee_id
+                    ));
+                }
+            }
+            Err(e) => {
+                env::log_str(&format!(
+                    "Credit score verification error for {}: {:?}",
+                    pending.employee_id, e
+                ));
+            }
+        }
+
+        self.pending_proofs.remove(&receipt_hash);
     }
 
     /// Get employee's income proof by type
@@ -813,31 +1106,6 @@ impl PayrollContract {
         computed.copy_from_slice(&result);
 
         assert_eq!(&computed, commitment, "History commitment mismatch - proof not bound to on-chain data");
-    }
-
-    /// Verify RISC Zero proof and extract results
-    /// Returns (is_valid, result, payment_count)
-    fn verify_risc_zero_proof(
-        &self,
-        _receipt: &[u8],
-        _proof_type: &IncomeProofType,
-        _threshold: Option<u64>,
-        _range_min: Option<u64>,
-        _range_max: Option<u64>,
-        _history_commitment: &[u8; 32],
-    ) -> (bool, bool, u32) {
-        // TODO: Implement actual RISC Zero verification
-        // In production, this would:
-        // 1. Call zk-verifier contract to verify STARK proof
-        // 2. Check image ID matches registered circuit for proof type
-        // 3. Extract journal outputs (result, payment_count)
-        // 4. Verify public inputs match (threshold, history_commitment)
-        //
-        // For now, return placeholder (development mode)
-        env::log_str("RISC Zero proof verification (dev mode - assuming valid)");
-
-        // In dev mode, assume proof is valid with result=true
-        (true, true, 6) // 6 months of payments
     }
 
     /// Check if verifier is authorized for the given disclosure type
