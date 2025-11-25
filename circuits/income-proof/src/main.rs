@@ -204,4 +204,13 @@ mod tests {
         let diff2 = payment2 - expected_salary;
         assert!(diff2 > tolerance);
     }
+
+    #[test]
+    fn test_average_income_calculation() {
+        let payments = vec![4000u64, 5000u64, 6000u64];
+        let total: u64 = payments.iter().sum();
+        let count = payments.len() as u64;
+        let average = total / count;
+        assert_eq!(average, 5000u64);
+    }
 }

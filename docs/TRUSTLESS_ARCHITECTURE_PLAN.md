@@ -20,386 +20,449 @@ Employee → Contract (RISC Zero verification) → Verifier (Bank)
 
 ---
 
-## Phase 1: Core Contract Refactoring
+## Implementation Status
 
-### 1.1 Remove Auditor Dependencies from Payroll Contract
+| Phase | Task | Status | Notes |
+|-------|------|--------|-------|
+| 1.1 | Remove auditor deps from payroll | ✅ DONE | Contracts updated |
+| 1.2 | Implement RISC Zero verification | 🔄 IN PROGRESS | This document |
+| 2.1 | New user flow implementation | ✅ DONE | Integrated in payroll contract |
+| 3.1 | Payroll interface redesign | ✅ DONE | New trustless API |
+| 3.2 | ZK verifier interface redesign | 🔄 IN PROGRESS | Next step |
+| 4.1 | Update RISC Zero circuits | ⏳ PENDING | After verification |
+| 5.1 | SDK updates | ⏳ PENDING | After circuits |
+| 6.1 | Testnet deployment | ⏳ PENDING | Final phase |
 
-**Current State:**
-- `trusted_verifiers` map exists but not heavily used
-- `submit_income_proof` accepts proofs but verification is placeholder
+---
 
-**Changes Required:**
+## Phase 1.2: RISC Zero Verification Implementation
 
-| Component | Action | Priority |
-|-----------|--------|----------|
-| `trusted_verifiers` | Remove or repurpose for FullAudit only | High |
-| `submit_income_proof` | Simplify - remove attestation params | High |
-| `VerifiedIncomeProof` | Update struct - remove `verified_by` | Medium |
-| Disclosure system | Keep as-is for selective access | Low |
+### Understanding RISC Zero on NEAR
 
-### 1.2 Implement Real RISC Zero Verification
+RISC Zero produces STARK proofs that are:
+- **Transparent**: No trusted setup required
+- **Post-quantum secure**: Based on hash functions
+- **Large**: Raw STARK proofs are ~200KB+
 
-**Location:** `contracts/zk-verifier/src/lib.rs`
+#### Challenge: On-Chain Verification
 
-**Current placeholder:**
+Full STARK verification on-chain is expensive. Solutions:
+
+| Approach | Proof Size | Gas Cost | Trust | Recommendation |
+|----------|-----------|----------|-------|----------------|
+| Full STARK on-chain | ~200KB | Very High | Trustless | Not practical for NEAR |
+| Groth16 wrapper (Bonsai) | ~256 bytes | Low | Trustless | ✅ Recommended |
+| Off-chain + commitment | ~64 bytes | Very Low | Semi-trusted | Fallback option |
+
+**Recommended: RISC Zero Groth16 via Bonsai**
+
+RISC Zero's Bonsai service can wrap STARK proofs in Groth16:
+- STARK proof → Bonsai → Groth16 proof (~256 bytes)
+- Groth16 verifier is ~200K gas on Ethereum, similar on NEAR
+- Maintains trustless properties
+
+### Implementation Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     RISC ZERO VERIFICATION FLOW                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  Employee                Bonsai Service              NEAR Contracts
+     │                         │                           │
+     │ 1. Run guest program    │                           │
+     │    locally with         │                           │
+     │    private inputs       │                           │
+     │                         │                           │
+     │ 2. Generate STARK       │                           │
+     │    proof (receipt)      │                           │
+     │──────────────────────────>                          │
+     │                         │                           │
+     │                         │ 3. Convert STARK          │
+     │                         │    to Groth16             │
+     │                         │                           │
+     │ 4. Receive Groth16      │                           │
+     │    proof + journal      │                           │
+     │<──────────────────────────                          │
+     │                         │                           │
+     │ 5. Submit to payroll    │                           │
+     │    contract             │                           │
+     │───────────────────────────────────────────────────────>
+     │                         │                           │
+     │                         │  6. Payroll calls         │
+     │                         │     zk_verifier           │
+     │                         │     .verify_groth16()     │
+     │                         │                           │
+     │                         │  7. Verify proof          │
+     │                         │     Extract journal       │
+     │                         │     Check image ID        │
+     │                         │                           │
+     │ 8. Success/Failure      │                           │
+     │<───────────────────────────────────────────────────────
+```
+
+### ZK Verifier Contract Design
+
 ```rust
-fn verify_risc_zero_receipt(&self, receipt: &[u8], ...) -> (bool, Vec<u8>) {
-    // TODO: Implement actual RISC Zero verification
+// contracts/zk-verifier/src/lib.rs
+
+/// Verification modes supported
+pub enum VerificationMode {
+    /// Full STARK verification (expensive, for testing)
+    FullStark,
+    /// Groth16 wrapped proof (recommended for production)
+    Groth16,
+    /// Development mode (skip verification)
+    DevMode,
+}
+
+/// Groth16 proof structure (from Bonsai)
+pub struct Groth16Proof {
+    /// Proof points (a, b, c)
+    pub proof: Vec<u8>,  // ~256 bytes
+    /// Public inputs (from journal)
+    pub public_inputs: Vec<u8>,
+    /// Image ID of the circuit
+    pub image_id: [u8; 32],
+}
+
+/// Verify income threshold proof
+pub fn verify_income_threshold(
+    &mut self,
+    proof: Groth16Proof,
+    expected_threshold: u64,
+    expected_history_commitment: [u8; 32],
+) -> IncomeThresholdOutput {
+    // 1. Verify image ID matches registered income threshold circuit
+    let registered_id = self.image_ids.get(&ProofType::IncomeThreshold)
+        .expect("Income threshold circuit not registered");
+    assert_eq!(proof.image_id, registered_id, "Invalid circuit");
+
+    // 2. Verify Groth16 proof
+    let is_valid = self.verify_groth16_proof(&proof);
+    assert!(is_valid, "Proof verification failed");
+
+    // 3. Extract and validate journal outputs
+    let output = self.decode_income_threshold_journal(&proof.public_inputs);
+
+    // 4. Verify public inputs match expected values
+    assert_eq!(output.threshold, expected_threshold, "Threshold mismatch");
+    assert_eq!(output.history_commitment, expected_history_commitment, "Commitment mismatch");
+
+    output
 }
 ```
 
-**Implementation Steps:**
+### Groth16 Verification on NEAR
 
-1. Add `risc0-zkvm` dependency with `verify` feature
-2. Deserialize RISC Zero receipt
-3. Verify STARK proof
-4. Check image ID matches registered circuit
-5. Extract journal (public outputs)
-6. Return verification result
+The Groth16 verifier requires elliptic curve operations. Options:
 
-**Note:** RISC Zero verification on NEAR requires careful gas management. May need to use:
-- Groth16 wrapper for smaller proofs
-- Off-chain verification with on-chain commitment (hybrid approach)
+1. **Pure Rust implementation** (portable but expensive)
+2. **NEAR precompiles** (if available)
+3. **External verification oracle** (semi-trusted)
+
+For initial implementation, we'll use a **simplified verification** that:
+- Validates proof structure
+- Checks image ID
+- Extracts journal outputs
+- Marks as "dev mode" verification
+
+Production deployment will integrate full Groth16 verification.
+
+### Journal (Public Outputs) Format
+
+Each circuit defines its journal structure:
+
+```rust
+// Income Threshold Circuit Journal
+pub struct IncomeThresholdJournal {
+    pub threshold: u64,           // The threshold being proven
+    pub meets_threshold: bool,    // Result: income >= threshold
+    pub payment_count: u32,       // Number of payments in proof
+    pub history_commitment: [u8; 32], // Binds to on-chain data
+}
+
+// Income Range Circuit Journal
+pub struct IncomeRangeJournal {
+    pub range_min: u64,
+    pub range_max: u64,
+    pub in_range: bool,           // Result: min <= income <= max
+    pub payment_count: u32,
+    pub history_commitment: [u8; 32],
+}
+
+// Credit Score Circuit Journal
+pub struct CreditScoreJournal {
+    pub threshold: u32,
+    pub meets_threshold: bool,
+    pub payment_count: u32,
+    pub history_commitment: [u8; 32],
+}
+```
+
+### Cross-Contract Call Flow
+
+```rust
+// In payroll contract
+fn verify_risc_zero_proof(
+    &self,
+    receipt: &[u8],
+    proof_type: &IncomeProofType,
+    threshold: Option<u64>,
+    range_min: Option<u64>,
+    range_max: Option<u64>,
+    history_commitment: &[u8; 32],
+) -> (bool, bool, u32) {
+    // Parse the receipt/proof
+    let proof: Groth16Proof = self.parse_proof(receipt);
+
+    // Call zk-verifier contract
+    match proof_type {
+        IncomeProofType::AboveThreshold | IncomeProofType::AverageAboveThreshold => {
+            let result = ext_zk_verifier::ext(self.zk_verifier.clone())
+                .verify_income_threshold(
+                    proof,
+                    threshold.unwrap(),
+                    *history_commitment,
+                )
+                .call();
+
+            (true, result.meets_threshold, result.payment_count)
+        }
+        IncomeProofType::InRange => {
+            let result = ext_zk_verifier::ext(self.zk_verifier.clone())
+                .verify_income_range(
+                    proof,
+                    range_min.unwrap(),
+                    range_max.unwrap(),
+                    *history_commitment,
+                )
+                .call();
+
+            (true, result.in_range, result.payment_count)
+        }
+        // ... other proof types
+    }
+}
+```
 
 ---
 
-## Phase 2: Simplified Income Proof Flow
+## Phase 3.2: ZK Verifier Contract Updates
 
-### 2.1 New User Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 1: Employee Generates Proof (OFF-CHAIN)                        │
-└─────────────────────────────────────────────────────────────────────┘
-
-Employee has private payment data:
-- Payment 1: $6,000
-- Payment 2: $7,000
-- Payment 3: $8,000
-- Wants to prove: average ≥ $5,000
-
-1. Employee fetches encrypted payment history from contract
-2. Employee decrypts locally with private key
-3. Employee runs RISC Zero guest program:
-   - Private inputs: [6000, 7000, 8000]
-   - Public inputs: threshold=5000, commitment
-   - Outputs: meets_threshold=true, payment_count=3
-4. RISC Zero generates receipt (STARK proof)
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 2: Employee Submits Proof (ON-CHAIN)                           │
-└─────────────────────────────────────────────────────────────────────┘
-
-Employee calls:
-  payroll_contract.submit_income_proof(
-    proof_type: IncomeProofType::AboveThreshold,
-    threshold: 5000,
-    risc_zero_receipt: <bytes>,
-  )
-
-Contract:
-1. Forwards receipt to zk_verifier contract
-2. zk_verifier.verify_income_threshold(receipt, threshold)
-3. Returns verified output
-4. Stores proof record with expiration
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 3: Third Party Verifies (ON-CHAIN READ)                        │
-└─────────────────────────────────────────────────────────────────────┘
-
-Bank calls:
-  payroll_contract.get_income_proof(employee_id)
-
-Returns:
-  {
-    proof_type: "AboveThreshold",
-    threshold: 5000,
-    result: true,
-    verified_at: 1732550400,
-    expires_at: 1735142400
-  }
-
-Bank NEVER sees: actual salary amounts, payment history
-```
-
-### 2.2 Disclosure System (Unchanged)
-
-The disclosure system remains for controlling WHO can access proofs:
+### New Contract Interface
 
 ```rust
-pub fn grant_disclosure(
-    &mut self,
-    verifier: AccountId,        // Who can see
-    disclosure_type: DisclosureType,  // What they can see
-    duration_days: u32,         // How long
-)
-```
+// ==================== EXTERNAL INTERFACE ====================
 
-**Disclosure Types:**
-- `IncomeAboveThreshold` - Can verify threshold proofs
-- `IncomeRange` - Can verify range proofs
-- `EmploymentStatus` - Can check employment
-- `FullAudit` - Complete access (rare, for auditors)
-
----
-
-## Phase 3: Contract Interface Redesign
-
-### 3.1 New Payroll Contract Interface
-
-```rust
-// ==================== INCOME PROOF OPERATIONS ====================
-
-/// Employee submits income proof directly (no auditor needed)
-/// Proof is verified via zk-verifier contract
-pub fn submit_income_proof(
-    &mut self,
-    proof_type: IncomeProofType,
-    threshold: Option<u64>,      // For threshold/average proofs
-    threshold_max: Option<u64>,  // For range proofs (min, max)
-    risc_zero_receipt: Vec<u8>,  // STARK proof
-) -> bool;
-
-/// Get verified income proof (for authorized verifiers)
-pub fn get_income_proof(
-    &self,
-    employee_id: AccountId,
-) -> Option<VerifiedIncomeProof>;
-
-/// Check if employee meets income requirement
-/// Called by banks/landlords with disclosure authorization
-pub fn verify_income_requirement(
-    &self,
-    employee_id: AccountId,
-    required_type: IncomeProofType,
-    required_threshold: u64,
-) -> bool;
-```
-
-### 3.2 New ZK Verifier Contract Interface
-
-```rust
-// ==================== VERIFICATION OPERATIONS ====================
-
-/// Verify income threshold proof
-/// Returns IncomeThresholdOutput with verified result
+/// Verify income threshold proof (Groth16)
+#[payable]
 pub fn verify_income_threshold(
     &mut self,
-    receipt: Vec<u8>,
+    proof_data: Vec<u8>,
     expected_threshold: u64,
-    history_commitment: [u8; 32],
+    expected_commitment: [u8; 32],
 ) -> IncomeThresholdOutput;
 
-/// Verify income range proof
+/// Verify income range proof (Groth16)
+#[payable]
 pub fn verify_income_range(
     &mut self,
-    receipt: Vec<u8>,
+    proof_data: Vec<u8>,
     expected_min: u64,
     expected_max: u64,
-    history_commitment: [u8; 32],
+    expected_commitment: [u8; 32],
 ) -> IncomeRangeOutput;
 
-/// Verify payment matches salary commitment
-pub fn verify_payment_proof(
+/// Verify credit score proof (Groth16)
+#[payable]
+pub fn verify_credit_score(
     &mut self,
-    receipt: Vec<u8>,
+    proof_data: Vec<u8>,
+    expected_threshold: u32,
+    expected_commitment: [u8; 32],
+) -> CreditScoreOutput;
+
+/// Verify payment proof (Groth16)
+#[payable]
+pub fn verify_payment(
+    &mut self,
+    proof_data: Vec<u8>,
     salary_commitment: [u8; 32],
     payment_commitment: [u8; 32],
 ) -> bool;
-```
 
-### 3.3 Removed/Deprecated Functions
+// ==================== ADMIN INTERFACE ====================
 
-```rust
-// REMOVE: No longer needed in trustless model
-pub fn register_trusted_verifier(...);  // Remove from income proofs
-pub fn remove_trusted_verifier(...);    // Remove from income proofs
-pub fn is_trusted_verifier(...);        // Remove from income proofs
-
-// KEEP: Still useful for FullAudit disclosure
-// Rename to "register_authorized_auditor" for clarity
-pub fn register_authorized_auditor(
+/// Register circuit image ID (owner only)
+pub fn register_image_id(
     &mut self,
-    auditor: AccountId,
-    license_info: String,
-) -> bool;
-```
-
----
-
-## Phase 4: RISC Zero Circuit Updates
-
-### 4.1 Income Proof Circuit (Guest Program)
-
-```rust
-// circuits/income-proof/src/main.rs
-#![no_main]
-#![no_std]
-
-use risc0_zkvm::guest::env;
-
-#[risc0_zkvm::guest::entry]
-fn main() {
-    // Read private inputs
-    let payments: Vec<u64> = env::read();
-    let threshold: u64 = env::read();
-    let history_commitment: [u8; 32] = env::read();
-
-    // Compute result
-    let total: u64 = payments.iter().sum();
-    let average = total / payments.len() as u64;
-    let meets_threshold = average >= threshold;
-
-    // Verify history commitment matches payments
-    let computed_commitment = compute_commitment(&payments);
-    assert_eq!(computed_commitment, history_commitment, "History commitment mismatch");
-
-    // Commit public outputs to journal
-    env::commit(&threshold);
-    env::commit(&meets_threshold);
-    env::commit(&(payments.len() as u32));
-    env::commit(&history_commitment);
-}
-```
-
-### 4.2 Circuit Image IDs
-
-Each circuit has a unique image ID (hash of the compiled program):
-
-```rust
-// Register image IDs on contract deployment
-zk_verifier.register_image_id(
-    ProofType::IncomeThreshold,
-    INCOME_THRESHOLD_IMAGE_ID,  // Computed at build time
+    proof_type: ProofType,
+    image_id: [u8; 32],
 );
+
+/// Set verification mode (owner only)
+pub fn set_verification_mode(&mut self, mode: VerificationMode);
+
+/// Get verification mode
+pub fn get_verification_mode(&self) -> VerificationMode;
 ```
 
----
-
-## Phase 5: SDK Updates
-
-### 5.1 Simplified SDK Interface
-
-```typescript
-// sdk/src/payroll.ts
-
-export class PrivatePayroll {
-  /**
-   * Generate and submit income proof
-   * No auditor interaction needed
-   */
-  async proveIncome(
-    proofType: IncomeProofType,
-    threshold: number,
-    privatePayments: number[],  // Decrypted locally
-  ): Promise<ProofResult> {
-    // 1. Generate RISC Zero proof locally
-    const receipt = await this.generateProof(proofType, threshold, privatePayments);
-
-    // 2. Submit directly to contract
-    return await this.contract.submit_income_proof({
-      proof_type: proofType,
-      threshold: threshold.toString(),
-      risc_zero_receipt: Array.from(receipt),
-    });
-  }
-
-  /**
-   * Check if income proof exists and meets requirement
-   * For banks/landlords with disclosure authorization
-   */
-  async verifyIncomeRequirement(
-    employeeId: string,
-    requiredThreshold: number,
-  ): Promise<boolean> {
-    return await this.contract.verify_income_requirement({
-      employee_id: employeeId,
-      required_type: IncomeProofType.AboveThreshold,
-      required_threshold: requiredThreshold.toString(),
-    });
-  }
-}
-```
-
----
-
-## Phase 6: Migration Path
-
-### 6.1 Backwards Compatibility
-
-During transition, support both flows:
+### Data Structures
 
 ```rust
-pub fn submit_income_proof_v2(
-    &mut self,
-    proof_type: IncomeProofType,
-    threshold: Option<u64>,
-    risc_zero_receipt: Vec<u8>,
-) -> bool {
-    // New trustless flow
+/// Verification mode
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub enum VerificationMode {
+    /// Skip verification (development only)
+    DevMode,
+    /// Full verification with Groth16
+    Groth16,
 }
 
-// Deprecated - keep for transition period
-pub fn submit_income_proof(
-    &mut self,
-    // ... old parameters with attestation
-) -> bool {
-    // Log deprecation warning
-    env::log_str("DEPRECATED: Use submit_income_proof_v2");
-    // ... old flow
+/// Income threshold verification output
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
+pub struct IncomeThresholdOutput {
+    pub threshold: u64,
+    pub meets_threshold: bool,
+    pub payment_count: u32,
+    pub history_commitment: [u8; 32],
+    pub verified: bool,
+}
+
+/// Income range verification output
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
+pub struct IncomeRangeOutput {
+    pub range_min: u64,
+    pub range_max: u64,
+    pub in_range: bool,
+    pub payment_count: u32,
+    pub history_commitment: [u8; 32],
+    pub verified: bool,
 }
 ```
 
-### 6.2 Migration Steps
+---
 
-1. **Deploy updated zk-verifier** with real RISC Zero verification
-2. **Register circuit image IDs** for all proof types
-3. **Deploy updated payroll contract** with v2 methods
-4. **Update SDK** to use new flow by default
-5. **Deprecate old methods** after transition period
-6. **Remove auditor dependencies** in final cleanup
+## Security Model
+
+### Trust Assumptions
+
+```
+TRUSTLESS (Cryptographic Guarantee):
+✓ Proof correctness (STARK/Groth16 mathematics)
+✓ Circuit integrity (image ID binding)
+✓ History binding (commitment verification)
+✓ Replay protection (receipt hash tracking)
+
+OPERATIONAL TRUST:
+• Bonsai service availability (can use local prover as fallback)
+• NEAR validators (standard blockchain trust)
+• Circuit correctness (audited code)
+```
+
+### Attack Vectors & Mitigations
+
+| Attack | Mitigation |
+|--------|------------|
+| Fake proof submission | Groth16 verification rejects invalid proofs |
+| Wrong circuit | Image ID must match registered circuit |
+| Fake payment history | History commitment verified against on-chain data |
+| Replay same proof | Receipt hash tracked in used_receipts |
+| Expired proof usage | Expiration timestamp checked |
+| Threshold manipulation | Public inputs extracted from verified journal |
 
 ---
 
-## Implementation Timeline
+## Development vs Production Mode
 
-| Phase | Task | Complexity | Dependencies |
-|-------|------|------------|--------------|
-| 1.1 | Remove auditor deps from payroll | Medium | None |
-| 1.2 | Implement RISC Zero verification | High | risc0-zkvm crate |
-| 2.1 | New user flow implementation | Medium | Phase 1 |
-| 3.1 | Payroll interface redesign | Medium | Phase 2 |
-| 3.2 | ZK verifier interface redesign | Medium | Phase 1.2 |
-| 4.1 | Update RISC Zero circuits | Medium | None |
-| 5.1 | SDK updates | Low | Phase 3 |
-| 6.1 | Migration & deprecation | Low | All phases |
+### Development Mode (Current)
+
+```rust
+fn verify_risc_zero_proof(...) -> (bool, bool, u32) {
+    if self.verification_mode == VerificationMode::DevMode {
+        env::log_str("DEV MODE: Skipping proof verification");
+        // Trust the submitted values
+        return (true, true, 6);
+    }
+    // ... actual verification
+}
+```
+
+### Production Mode
+
+```rust
+fn verify_risc_zero_proof(...) -> (bool, bool, u32) {
+    // 1. Parse Groth16 proof
+    let proof = Groth16Proof::try_from_slice(receipt)
+        .expect("Invalid proof format");
+
+    // 2. Verify image ID
+    let expected_id = self.get_image_id(proof_type);
+    assert_eq!(proof.image_id, expected_id, "Invalid circuit");
+
+    // 3. Verify Groth16 proof cryptographically
+    let is_valid = self.groth16_verify(&proof);
+    assert!(is_valid, "Cryptographic verification failed");
+
+    // 4. Extract and validate journal
+    let journal = self.decode_journal(&proof.public_inputs, proof_type);
+
+    // 5. Return verified outputs
+    (true, journal.result, journal.payment_count)
+}
+```
 
 ---
 
-## Risk Assessment
+## Next Implementation Steps
 
-### Technical Risks
+### Immediate (This Session)
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| RISC Zero verification gas cost | High | Use Groth16 wrapper or hybrid approach |
-| Circuit complexity limits | Medium | Optimize guest programs |
-| Cross-contract call failures | Medium | Proper error handling |
+1. ✅ Update payroll contract with trustless interface
+2. 🔄 Update zk-verifier contract:
+   - Add verification mode enum
+   - Add new verification methods
+   - Add journal decoding
+   - Add dev mode support
+3. 🔄 Test cross-contract calls
 
-### Security Considerations
+### Short-term
 
-| Concern | Status | Notes |
-|---------|--------|-------|
-| Replay attacks | Handled | Track used receipts |
-| History commitment binding | Handled | Verify commitment matches on-chain data |
-| Timestamp freshness | Handled | Expiration on proofs |
-| Image ID tampering | Handled | Owner-only registration |
+4. Implement Groth16 proof parsing
+5. Add proper error handling
+6. Write integration tests
+
+### Medium-term
+
+7. Integrate with Bonsai for STARK→Groth16 conversion
+8. Update RISC Zero circuits with proper journal format
+9. Update SDK for new flow
+
+### Long-term
+
+10. Security audit
+11. Testnet deployment
+12. Performance optimization
+13. Mainnet launch
 
 ---
 
-## Next Steps
+## File Changes Summary
 
-1. **Immediate**: Update contract interfaces (Phase 3)
-2. **Short-term**: Implement RISC Zero verification (Phase 1.2)
-3. **Medium-term**: Update circuits and SDK (Phases 4-5)
-4. **Long-term**: Testnet deployment and migration (Phase 6)
+### Modified Files
+
+| File | Changes |
+|------|---------|
+| `contracts/payroll/src/lib.rs` | Trustless income proof submission, removed auditor deps |
+| `contracts/zk-verifier/src/lib.rs` | New verification interface (pending) |
+| `docs/TRUSTLESS_ARCHITECTURE_PLAN.md` | This document |
+| `docs/architecture/SYSTEM_ARCHITECTURE.md` | Updated architecture diagrams |
+
+### New Files (To Be Created)
+
+| File | Purpose |
+|------|---------|
+| `contracts/zk-verifier/src/groth16.rs` | Groth16 verification logic |
+| `contracts/zk-verifier/src/journal.rs` | Journal decoding |
+| `sdk/src/proof.ts` | Proof generation helpers |
