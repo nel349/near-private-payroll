@@ -36,6 +36,9 @@ Employee → Contract (RISC Zero verification) → Verifier (Bank)
 | 7.1 | EZKL/zkML infrastructure | 📋 PLANNED | ML-based proof support |
 | 7.2 | EZKL proof verification in contracts | 📋 PLANNED | Dual proof system |
 | 7.3 | ML model development | 📋 PLANNED | Credit scoring, fraud detection |
+| 8.1 | Proof server (Phase 1) | 🔨 IN PROGRESS | Hackathon MVP |
+| 8.2 | Local TEE proving (Phase 1.5) | 📋 PLANNED | Privacy-preserving local option |
+| 8.3 | Decentralized prover network (Phase 2-3) | 📋 PLANNED | Testnet → Mainnet |
 
 ---
 
@@ -628,3 +631,20 @@ enum EzklProofType {
 | `zkml/src/prover.ts` | TypeScript proof generation |
 | `contracts/zk-verifier/src/ezkl.rs` | EZKL proof verification |
 | `sdk/src/zkml.ts` | zkML SDK integration |
+
+### Planned Files (Proof Server)
+
+| File | Purpose |
+|------|---------|
+| `proof-server/` | Proof server infrastructure |
+| `proof-server/src/main.rs` | HTTP API + RISC Zero prover |
+| `proof-server/src/tee.rs` | TEE attestation support |
+| `proof-server/Dockerfile` | Container with SGX support |
+| `contracts/prover-registry/` | Decentralized prover registry |
+| `docs/PROOF_SERVER_ARCHITECTURE.md` | Full architecture documentation |
+
+---
+
+## Related Documents
+
+- [Proof Server Architecture](./PROOF_SERVER_ARCHITECTURE.md) - Detailed proof server design, TEE integration, and decentralization roadmap
