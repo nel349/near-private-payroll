@@ -31,14 +31,15 @@ Employee → Proof Server (TEE) → Contract (verification) → Verifier (Bank)
 | 3.2 | ZK verifier interface redesign | ✅ DONE | Verification modes, journal parsing |
 | 4.1 | Update RISC Zero circuits | ✅ DONE | history_commitment added to journals |
 | 4.2 | Implement Groth16 verification | ✅ DONE | Using NEAR alt_bn128 precompiles |
+| 4.3 | Local Groth16 proof generation | ✅ DONE | RISC Zero 3.0 with ProverOpts::groth16() |
+| 4.4 | Verification key registration | ✅ DONE | Universal VK for all circuits |
 | 5.1 | SDK updates | ⏳ PENDING | After circuits |
 | 6.1 | Testnet deployment | ⏳ PENDING | Final phase |
 | 7.1 | EZKL/zkML infrastructure | 📋 PLANNED | ML-based proof support |
 | 7.2 | EZKL proof verification in contracts | 📋 PLANNED | Dual proof system |
 | 7.3 | ML model development | 📋 PLANNED | Credit scoring, fraud detection |
-| 8.1 | Proof server (Phase 1) | ✅ DONE | Local STARK generation with TEE attestation |
-| 8.2 | Bonsai integration (Phase 1.5) | 📋 PLANNED | STARK → Groth16 conversion for on-chain verification |
-| 8.3 | Decentralized prover network (Phase 2-3) | 📋 PLANNED | Testnet → Mainnet |
+| 8.1 | Proof server | ✅ DONE | Local STARK+Groth16 generation (no Bonsai needed) |
+| 8.2 | Decentralized prover network (Phase 2-3) | 📋 PLANNED | Testnet → Mainnet |
 
 ---
 
@@ -58,8 +59,8 @@ Full STARK verification on-chain is expensive. Solutions:
 | Approach | Proof Size | Gas Cost | Trust | Status |
 |----------|-----------|----------|-------|--------|
 | Full STARK on-chain | ~200KB | Very High | Trustless | Not practical for NEAR |
-| Groth16 wrapper (Bonsai) | ~256 bytes | Low | Trustless | 📋 PLANNED (requires Bonsai API key) |
-| **Proof Server + TEE** | ~800 bytes | Low | TEE attestation | ✅ CURRENT IMPLEMENTATION |
+| **Local Groth16 Generation** | ~256 bytes | Low (~200K gas) | Trustless | ✅ **CURRENT IMPLEMENTATION** |
+| Bonsai API (cloud Groth16) | ~256 bytes | Low | Trustless + API dependency | Alternative option |
 
 #### Why Groth16 Wrapping?
 
@@ -75,97 +76,119 @@ Full STARK verification on-chain is expensive. Solutions:
 
 **Key insight:** NEAR has native `alt_bn128` precompiles for efficient Groth16 verification (~200K gas), but no STARK verification precompiles. This is why converting STARK → Groth16 is valuable for on-chain verification.
 
-#### Current Implementation: Proof Server with TEE Attestation
+#### RISC Zero's Recursion Architecture
 
-For the hackathon MVP, we use a **local proof server** approach:
+RISC Zero uses a **two-layer proof system**:
 
-1. **Proof Server** runs RISC Zero zkVM locally and generates STARK proofs
-2. **TEE Attestation** (optional) - server signs proofs with Ed25519 key
-3. **Contract** can verify server attestation signature OR use dev mode
-4. **Future:** Bonsai integration for STARK → Groth16 conversion
+1. **Application Layer (STARK)**: Your circuits (income-proof, payment-proof, etc.) generate STARK proofs
+2. **Recursion Layer (Groth16)**: A universal circuit proves "this STARK is valid"
+
+```
+Your Circuit → STARK Proof → Recursion Circuit → Groth16 Proof
+  (income)      (100KB+)      (verifies STARK)    (256 bytes)
+```
+
+**Important:** RISC Zero uses **ONE universal verification key** for ALL circuits because:
+- The Groth16 layer only verifies the recursion circuit (not your application circuit)
+- Your application circuit is verified in the STARK layer
+- The Groth16 proof attests: "I verified a valid STARK proof for image_id X"
+- This allows one VK to work for all proof types (income, payment, balance, etc.)
+
+#### Local Groth16 Generation (No Bonsai Required)
+
+RISC Zero 3.0+ supports **local Groth16 proof generation** using `ProverOpts::groth16()`:
+
+```rust
+// Generate both STARK and Groth16 proofs locally
+let receipt = prover.prove_with_opts(
+    env,
+    ProverOpts::groth16()  // Automatically wraps STARK with Groth16
+)?;
+```
+
+This eliminates the need for Bonsai API:
+- ✅ **Fully local**: No external API dependencies
+- ✅ **Trustless**: Cryptographic proof, not attestation
+- ✅ **Efficient**: ~256-byte proofs, ~200K gas on NEAR
+- ✅ **Private**: Proof generation happens on your hardware
+
+#### Current Implementation: Local Groth16 Proof Server
+
+We use a **fully local proof server** with trustless on-chain verification:
+
+1. **Proof Server** runs RISC Zero zkVM with `ProverOpts::groth16()`
+2. **STARK + Groth16** proofs generated locally (~2 minutes on powerful hardware)
+3. **On-chain Verification** using NEAR's `alt_bn128_pairing_check` precompile
+4. **No external dependencies** - no Bonsai API, no attestation needed
 
 ### Implementation Architecture (Current)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                  PROOF SERVER ARCHITECTURE (CURRENT)                     │
+│           LOCAL GROTH16 PROOF GENERATION (CURRENT)                       │
 └─────────────────────────────────────────────────────────────────────────┘
 
-  Employee                Proof Server (TEE)          NEAR Contracts
+  Employee                Proof Server (Local)          NEAR Contracts
      │                         │                           │
      │ 1. Request proof with   │                           │
      │    private inputs       │                           │
      │──────────────────────────>                          │
      │                         │                           │
      │                         │ 2. Run RISC Zero zkVM     │
-     │                         │    - Load guest ELF       │
-     │                         │    - Execute with inputs  │
-     │                         │    - Generate STARK proof │
+     │                         │    with ProverOpts::      │
+     │                         │    groth16()              │
      │                         │                           │
-     │                         │ 3. Create receipt:        │
-     │                         │    - image_id (32 bytes)  │
-     │                         │    - proof_data (256 bytes)│
-     │                         │    - journal (public outputs)│
+     │                         │ 3. Generate proofs:       │
+     │                         │    - STARK proof (local)  │
+     │                         │    - Groth16 wrapper      │
      │                         │                           │
-     │                         │ 4. Sign with TEE key      │
-     │                         │    (attestation)          │
+     │                         │ 4. Extract Groth16 seal:  │
+     │                         │    - A (G1: 64 bytes)     │
+     │                         │    - B (G2: 128 bytes)    │
+     │                         │    - C (G1: 64 bytes)     │
      │                         │                           │
-     │ 5. Receive proof +      │                           │
-     │    attestation          │                           │
+     │                         │ 5. Package proof:         │
+     │                         │    - image_id (32)        │
+     │                         │    - seal (256)           │
+     │                         │    - journal (variable)   │
+     │                         │                           │
+     │ 6. Receive Groth16      │                           │
+     │    proof package        │                           │
      │<──────────────────────────                          │
      │                         │                           │
-     │ 6. Submit to payroll    │                           │
-     │    contract             │                           │
+     │ 7. Submit to contract   │                           │
      │───────────────────────────────────────────────────────>
      │                         │                           │
-     │                         │  7. Parse receipt:        │
-     │                         │     - Extract journal     │
-     │                         │     - Check image ID      │
-     │                         │     - (Dev mode: skip)    │
-     │                         │     - (Prod: verify sig)  │
+     │                         │  8. Verify Groth16:       │
+     │                         │     - Parse seal (A,B,C)  │
+     │                         │     - Compute vk_ic       │
+     │                         │     - Pairing check via   │
+     │                         │       alt_bn128 precompile│
      │                         │                           │
-     │ 8. Success/Failure      │                           │
+     │ 9. Success/Failure      │                           │
      │<───────────────────────────────────────────────────────
 ```
 
-### Future Architecture: With Bonsai
+### Alternative: Bonsai API (Optional)
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  BONSAI ARCHITECTURE (PLANNED)                           │
-└─────────────────────────────────────────────────────────────────────────┘
+Bonsai API can be used as an alternative for cloud-based Groth16 generation:
 
-  Employee            Proof Server          Bonsai API       NEAR Contracts
-     │                     │                    │                  │
-     │ 1. Request proof    │                    │                  │
-     │──────────────────────>                   │                  │
-     │                     │                    │                  │
-     │                     │ 2. Generate STARK  │                  │
-     │                     │    proof locally   │                  │
-     │                     │                    │                  │
-     │                     │ 3. Send STARK to   │                  │
-     │                     │    Bonsai          │                  │
-     │                     │─────────────────────>                 │
-     │                     │                    │                  │
-     │                     │                    │ 4. Convert       │
-     │                     │                    │    STARK→Groth16 │
-     │                     │                    │                  │
-     │                     │ 5. Receive Groth16 │                  │
-     │                     │<─────────────────────                 │
-     │                     │                    │                  │
-     │ 6. Return Groth16   │                    │                  │
-     │<──────────────────────                   │                  │
-     │                     │                    │                  │
-     │ 7. Submit Groth16   │                    │                  │
-     │───────────────────────────────────────────────────────────────>
-     │                     │                    │                  │
-     │                     │                    │ 8. Verify Groth16│
-     │                     │                    │    via alt_bn128 │
-     │                     │                    │    precompile    │
-     │                     │                    │                  │
-     │ 9. Success          │                    │                  │
-     │<───────────────────────────────────────────────────────────────
-```
+**Benefits:**
+- Offload compute-intensive proof generation to Bonsai cloud
+- Faster proof generation on low-end hardware
+- Same trustless verification on-chain
+
+**Trade-offs:**
+- External API dependency (requires API key and internet connection)
+- Privacy: STARK proof sent to Bonsai (journal is still public anyway)
+- Cost: Bonsai API charges per proof
+
+**When to use:**
+- Mobile/web applications where local proving is not practical
+- Low-power devices that can't generate proofs in reasonable time
+- Cost optimization (if Bonsai is cheaper than compute resources)
+
+**Current status:** Not required for our implementation. Local proving works well on modern hardware (~2 minutes per proof).
 
 ### ZK Verifier Contract Design
 

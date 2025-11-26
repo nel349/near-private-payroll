@@ -20,9 +20,37 @@
 
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::UnorderedMap;
-use near_sdk::serde::{Deserialize, Serialize};
+use near_sdk::serde::{Deserialize, Deserializer, Serialize};
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey, NearSchema, PanicOnDefault};
 use sha2::{Digest, Sha256};
+
+// Groth16 verification module using NEAR's alt_bn128 precompiles
+mod groth16;
+
+// Helper module for deserializing hex strings to byte arrays
+mod hex_serde {
+    use near_sdk::serde::{Deserialize, Deserializer};
+
+    pub fn deserialize_32<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: String = String::deserialize(deserializer)?;
+        let s = s.strip_prefix("0x").unwrap_or(&s);
+
+        let bytes = hex::decode(s).map_err(near_sdk::serde::de::Error::custom)?;
+        if bytes.len() != 32 {
+            return Err(near_sdk::serde::de::Error::custom(format!(
+                "Expected 32 bytes, got {}",
+                bytes.len()
+            )));
+        }
+
+        let mut array = [0u8; 32];
+        array.copy_from_slice(&bytes);
+        Ok(array)
+    }
+}
 
 #[derive(BorshStorageKey, BorshSerialize)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -40,7 +68,9 @@ pub enum StorageKey {
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub struct G1Point {
+    #[serde(deserialize_with = "hex_serde::deserialize_32")]
     pub x: [u8; 32],
+    #[serde(deserialize_with = "hex_serde::deserialize_32")]
     pub y: [u8; 32],
 }
 
@@ -50,9 +80,13 @@ pub struct G1Point {
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub struct G2Point {
+    #[serde(deserialize_with = "hex_serde::deserialize_32")]
     pub x_c0: [u8; 32],
+    #[serde(deserialize_with = "hex_serde::deserialize_32")]
     pub x_c1: [u8; 32],
+    #[serde(deserialize_with = "hex_serde::deserialize_32")]
     pub y_c0: [u8; 32],
+    #[serde(deserialize_with = "hex_serde::deserialize_32")]
     pub y_c1: [u8; 32],
 }
 
