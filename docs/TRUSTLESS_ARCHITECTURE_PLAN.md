@@ -25,11 +25,12 @@ Employee → Contract (RISC Zero verification) → Verifier (Bank)
 | Phase | Task | Status | Notes |
 |-------|------|--------|-------|
 | 1.1 | Remove auditor deps from payroll | ✅ DONE | Contracts updated |
-| 1.2 | Implement RISC Zero verification | 🔄 IN PROGRESS | This document |
+| 1.2 | Implement RISC Zero verification | ✅ DONE | Cross-contract calls wired |
 | 2.1 | New user flow implementation | ✅ DONE | Integrated in payroll contract |
 | 3.1 | Payroll interface redesign | ✅ DONE | New trustless API |
-| 3.2 | ZK verifier interface redesign | 🔄 IN PROGRESS | Next step |
-| 4.1 | Update RISC Zero circuits | ⏳ PENDING | After verification |
+| 3.2 | ZK verifier interface redesign | ✅ DONE | Verification modes, journal parsing |
+| 4.1 | Update RISC Zero circuits | ✅ DONE | history_commitment added to journals |
+| 4.2 | Implement Groth16 verification | ✅ DONE | Using NEAR alt_bn128 precompiles |
 | 5.1 | SDK updates | ⏳ PENDING | After circuits |
 | 6.1 | Testnet deployment | ⏳ PENDING | Final phase |
 
@@ -155,19 +156,22 @@ pub fn verify_income_threshold(
 
 ### Groth16 Verification on NEAR
 
-The Groth16 verifier requires elliptic curve operations. Options:
+The Groth16 verifier requires elliptic curve operations. NEAR Protocol has **native alt_bn128 precompiles** available since 2021:
 
-1. **Pure Rust implementation** (portable but expensive)
-2. **NEAR precompiles** (if available)
-3. **External verification oracle** (semi-trusted)
+```rust
+// Available in near_sdk::env
+pub fn alt_bn128_g1_multiexp(value: impl AsRef<[u8]>) -> Vec<u8>
+pub fn alt_bn128_g1_sum(value: impl AsRef<[u8]>) -> Vec<u8>
+pub fn alt_bn128_pairing_check(value: impl AsRef<[u8]>) -> bool
+```
 
-For initial implementation, we'll use a **simplified verification** that:
-- Validates proof structure
-- Checks image ID
-- Extracts journal outputs
-- Marks as "dev mode" verification
+**Implementation approach:**
+1. ✅ Use `alt_bn128_pairing_check` for Groth16 verification
+2. ✅ Parse proof points (A, B, C) from receipt
+3. ✅ Store verification key (α, β, γ, δ) per circuit
+4. ✅ Compute pairing equation: `e(A,B) * e(-vk_α, vk_β) * e(-public_inputs, vk_γ) * e(-C, vk_δ) == 1`
 
-Production deployment will integrate full Groth16 verification.
+**Gas Cost:** Similar to Ethereum (~200K gas equivalent on NEAR)
 
 ### Journal (Public Outputs) Format
 

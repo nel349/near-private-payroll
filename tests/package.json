@@ -1,0 +1,39 @@
+{
+  "name": "@near-private-payroll/tests",
+  "version": "0.1.0",
+  "description": "Integration tests for NEAR Private Payroll contracts",
+  "type": "module",
+  "scripts": {
+    "test": "ava",
+    "test:watch": "ava --watch",
+    "build:contracts": "cd .. && cargo near build non-reproducible-wasm"
+  },
+  "keywords": [
+    "near",
+    "payroll",
+    "testing",
+    "integration"
+  ],
+  "author": "nel349",
+  "license": "MIT",
+  "devDependencies": {
+    "near-workspaces": "^5.0.0",
+    "ava": "^6.4.1",
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0"
+  },
+  "ava": {
+    "files": [
+      "**/*.test.ts"
+    ],
+    "extensions": {
+      "ts": "module"
+    },
+    "nodeArguments": [
+      "--import=ts-node/esm"
+    ],
+    "timeout": "120s",
+    "concurrency": 1
+  }
+}
