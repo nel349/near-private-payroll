@@ -15,9 +15,8 @@
 //! - Extracts and validates public outputs from journal
 //! - Validates history commitments to bind proofs to on-chain data
 //!
-//! ## Verification Modes
-//! - **DevMode**: Skip cryptographic verification (development only)
-//! - **Groth16**: Full Groth16 verification (production)
+//! ## Verification
+//! - **Groth16**: Full cryptographic verification using NEAR's alt_bn128 precompiles
 
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::UnorderedMap;
@@ -87,17 +86,6 @@ pub struct Groth16Proof {
     pub c: G1Point,
 }
 
-/// Verification mode for the contract
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug, NearSchema)]
-#[borsh(crate = "near_sdk::borsh")]
-#[serde(crate = "near_sdk::serde")]
-pub enum VerificationMode {
-    /// Skip cryptographic verification (DEVELOPMENT ONLY)
-    /// WARNING: Do not use in production!
-    DevMode,
-    /// Full Groth16 verification (production)
-    Groth16,
-}
 
 /// Proof types supported by this verifier
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Debug, NearSchema)]
@@ -220,17 +208,14 @@ pub struct ZkVerifier {
     pub total_verifications: u64,
     /// Successful verifications
     pub successful_verifications: u64,
-    /// Verification mode (DevMode for development, Groth16 for production)
-    pub verification_mode: VerificationMode,
 }
 
 #[near_bindgen]
 impl ZkVerifier {
-    /// Initialize the verifier contract
-    /// Starts in DevMode by default - call set_verification_mode for production
+    /// Initialize the verifier contract with Groth16 verification
     #[init]
     pub fn new(owner: AccountId) -> Self {
-        env::log_str("WARNING: ZK Verifier initialized in DevMode. Set verification mode to Groth16 for production.");
+        env::log_str("ZK Verifier initialized with Groth16 verification");
         Self {
             owner,
             image_ids: UnorderedMap::new(StorageKey::ImageIds),
@@ -238,7 +223,6 @@ impl ZkVerifier {
             verification_history: UnorderedMap::new(StorageKey::VerificationHistory),
             total_verifications: 0,
             successful_verifications: 0,
-            verification_mode: VerificationMode::DevMode,
         }
     }
 
@@ -284,26 +268,6 @@ impl ZkVerifier {
         self.assert_owner();
         self.owner = new_owner.clone();
         env::log_str(&format!("Ownership transferred to {}", new_owner));
-    }
-
-    /// Set verification mode (owner only)
-    /// WARNING: Only use DevMode for development/testing!
-    pub fn set_verification_mode(&mut self, mode: VerificationMode) {
-        self.assert_owner();
-        self.verification_mode = mode.clone();
-        match mode {
-            VerificationMode::DevMode => {
-                env::log_str("WARNING: Verification mode set to DevMode. Proofs will NOT be cryptographically verified!");
-            }
-            VerificationMode::Groth16 => {
-                env::log_str("Verification mode set to Groth16. Full cryptographic verification enabled.");
-            }
-        }
-    }
-
-    /// Get current verification mode
-    pub fn get_verification_mode(&self) -> VerificationMode {
-        self.verification_mode.clone()
     }
 
     // ==================== VERIFICATION OPERATIONS (TRUSTLESS) ====================
@@ -581,51 +545,17 @@ impl ZkVerifier {
             .expect("Image ID not registered for this proof type")
     }
 
-    /// Verify a RISC Zero receipt
+    /// Verify a RISC Zero receipt using Groth16 verification
     /// Returns (is_valid, journal_bytes)
     ///
-    /// In DevMode: Skips cryptographic verification, only checks format
-    /// In Groth16 mode: Full cryptographic verification using alt_bn128 precompiles
+    /// Full cryptographic verification using NEAR's alt_bn128 precompiles
     fn verify_risc_zero_receipt(
         &self,
         receipt: &[u8],
         expected_image_id: &[u8; 32],
         proof_type: &ProofType,
     ) -> (bool, Vec<u8>) {
-        match self.verification_mode {
-            VerificationMode::DevMode => {
-                self.verify_receipt_dev_mode(receipt, expected_image_id)
-            }
-            VerificationMode::Groth16 => {
-                self.verify_receipt_groth16(receipt, expected_image_id, proof_type)
-            }
-        }
-    }
-
-    /// DevMode verification - checks format but skips cryptographic verification
-    /// WARNING: Only use for development/testing!
-    fn verify_receipt_dev_mode(&self, receipt: &[u8], expected_image_id: &[u8; 32]) -> (bool, Vec<u8>) {
-        env::log_str("WARNING: DevMode verification - cryptographic verification SKIPPED");
-
-        if receipt.len() < 64 {
-            env::log_str("Receipt too short");
-            return (false, vec![]);
-        }
-
-        // Extract image ID from receipt (first 32 bytes in our dev format)
-        let mut receipt_image_id = [0u8; 32];
-        receipt_image_id.copy_from_slice(&receipt[0..32]);
-
-        if &receipt_image_id != expected_image_id {
-            env::log_str("Image ID mismatch");
-            return (false, vec![]);
-        }
-
-        // Journal is the rest of the receipt (simplified dev format)
-        let journal = receipt[32..].to_vec();
-
-        env::log_str("DevMode verification passed (NOT cryptographically verified)");
-        (true, journal)
+        self.verify_receipt_groth16(receipt, expected_image_id, proof_type)
     }
 
     /// Groth16 verification - full cryptographic verification
@@ -799,15 +729,12 @@ impl ZkVerifier {
         }
 
         // Compute scalar multiplications: scalars[i] * IC[i+1]
-        // Format for alt_bn128_g1_multiexp: [(G1, scalar), ...]
-        // Serialized as: num_pairs (u32) || pairs...
-        // Each pair: G1_x (32) || G1_y (32) || scalar (32)
+        // Format for alt_bn128_g1_multiexp: consecutive (G1, scalar) pairs
+        // Each pair: G1_x (32) || G1_y (32) || scalar (32) = 96 bytes
+        // NO count prefix - just raw pairs
 
         let num_pairs = scalars.len().min(ic.len() - 1);
-        let mut multiexp_input = Vec::with_capacity(4 + num_pairs * 96);
-
-        // Number of pairs (little-endian u32)
-        multiexp_input.extend_from_slice(&(num_pairs as u32).to_le_bytes());
+        let mut multiexp_input = Vec::with_capacity(num_pairs * 96);
 
         for i in 0..num_pairs {
             // G1 point
@@ -835,12 +762,10 @@ impl ZkVerifier {
 
     /// Add two G1 points using alt_bn128_g1_sum
     fn add_g1_points(&self, p1: &G1Point, p2: &G1Point) -> G1Point {
-        // Format for alt_bn128_g1_sum: num_points (u32) || points...
+        // Format for alt_bn128_g1_sum: consecutive points
         // Each point: x (32) || y (32) || sign (1 byte, 0 for positive)
-        let mut input = Vec::with_capacity(4 + 65 * 2);
-
-        // Number of points
-        input.extend_from_slice(&2u32.to_le_bytes());
+        // NO count prefix - just raw points (65 bytes each)
+        let mut input = Vec::with_capacity(65 * 2);
 
         // Point 1 (positive)
         input.extend_from_slice(&p1.x);
@@ -866,14 +791,11 @@ impl ZkVerifier {
     fn negate_g1(&self, p: &G1Point) -> G1Point {
         // For BN254, negation is: (x, -y mod p)
         // Using alt_bn128_g1_sum with sign = 1 (negative)
-        // But simpler: use the identity that -P = (P.x, q - P.y) where q is field modulus
-        // We can use alt_bn128_g1_sum with sign byte = 1 to get negation
-
-        let mut input = Vec::with_capacity(4 + 65);
-        input.extend_from_slice(&1u32.to_le_bytes());
+        // Format: x (32) || y (32) || sign (1) - NO count prefix
+        let mut input = Vec::with_capacity(65);
         input.extend_from_slice(&p.x);
         input.extend_from_slice(&p.y);
-        input.push(1); // sign = negative
+        input.push(1); // sign = negative (returns -P)
 
         let result = env::alt_bn128_g1_sum(&input);
 
@@ -886,8 +808,9 @@ impl ZkVerifier {
     }
 
     /// Build pairing input for 4 pairs: (G1, G2) each
-    /// Format for alt_bn128_pairing_check: num_pairs (u32) || pairs...
-    /// Each pair: G1 (64 bytes) || G2 (128 bytes)
+    /// Format for alt_bn128_pairing_check: consecutive pairs
+    /// Each pair: G1 (64 bytes) || G2 (128 bytes) = 192 bytes
+    /// NO count prefix - just raw pairs
     fn build_pairing_input(
         &self,
         g1_1: &G1Point, g2_1: &G2Point,
@@ -895,10 +818,7 @@ impl ZkVerifier {
         g1_3: &G1Point, g2_3: &G2Point,
         g1_4: &G1Point, g2_4: &G2Point,
     ) -> Vec<u8> {
-        let mut input = Vec::with_capacity(4 + 4 * (64 + 128));
-
-        // Number of pairs
-        input.extend_from_slice(&4u32.to_le_bytes());
+        let mut input = Vec::with_capacity(4 * 192);
 
         // Pair 1: (-A, B)
         self.append_pairing_pair(&mut input, g1_1, g2_1);
@@ -982,25 +902,10 @@ impl ZkVerifier {
 
     /// Parse income threshold journal
     /// Format: [threshold: 8, meets_threshold: 1, payment_count: 4, history_commitment: 32]
+    /// Total: 45 bytes
     fn parse_income_threshold_output(&self, journal: &[u8], expected_commitment: &[u8; 32]) -> IncomeThresholdOutput {
-        // Expected format: [threshold: 8, meets_threshold: 1, payment_count: 4, history_commitment: 32]
-        // Total: 45 bytes
         if journal.len() < 45 {
-            // Fallback for dev mode with shorter journal
-            if journal.len() >= 13 {
-                let threshold = u64::from_le_bytes(journal[0..8].try_into().unwrap());
-                let meets_threshold = journal[8] != 0;
-                let payment_count = u32::from_le_bytes(journal[9..13].try_into().unwrap());
-
-                return IncomeThresholdOutput {
-                    threshold,
-                    meets_threshold,
-                    payment_count,
-                    history_commitment: *expected_commitment, // Use expected in dev mode
-                    verified: false,
-                };
-            }
-
+            env::log_str(&format!("Invalid journal length: {} (expected 45)", journal.len()));
             return IncomeThresholdOutput {
                 threshold: 0,
                 meets_threshold: false,
@@ -1028,25 +933,10 @@ impl ZkVerifier {
 
     /// Parse income range journal
     /// Format: [min: 8, max: 8, in_range: 1, payment_count: 4, history_commitment: 32]
+    /// Total: 53 bytes
     fn parse_income_range_output(&self, journal: &[u8], expected_commitment: &[u8; 32]) -> IncomeRangeOutput {
-        // Total: 53 bytes
         if journal.len() < 53 {
-            // Fallback for dev mode with shorter journal
-            if journal.len() >= 17 {
-                let min = u64::from_le_bytes(journal[0..8].try_into().unwrap());
-                let max = u64::from_le_bytes(journal[8..16].try_into().unwrap());
-                let in_range = journal[16] != 0;
-
-                return IncomeRangeOutput {
-                    min,
-                    max,
-                    in_range,
-                    payment_count: 0,
-                    history_commitment: *expected_commitment,
-                    verified: false,
-                };
-            }
-
+            env::log_str(&format!("Invalid journal length: {} (expected 53)", journal.len()));
             return IncomeRangeOutput {
                 min: 0,
                 max: 0,
@@ -1077,23 +967,10 @@ impl ZkVerifier {
 
     /// Parse credit score journal
     /// Format: [threshold: 4, meets_threshold: 1, payment_count: 4, history_commitment: 32]
+    /// Total: 41 bytes
     fn parse_credit_score_output(&self, journal: &[u8], expected_commitment: &[u8; 32]) -> CreditScoreOutput {
-        // Total: 41 bytes
         if journal.len() < 41 {
-            // Fallback for dev mode
-            if journal.len() >= 5 {
-                let threshold = u32::from_le_bytes(journal[0..4].try_into().unwrap());
-                let meets_threshold = journal[4] != 0;
-
-                return CreditScoreOutput {
-                    threshold,
-                    meets_threshold,
-                    payment_count: 0,
-                    history_commitment: *expected_commitment,
-                    verified: false,
-                };
-            }
-
+            env::log_str(&format!("Invalid journal length: {} (expected 41)", journal.len()));
             return CreditScoreOutput {
                 threshold: 0,
                 meets_threshold: false,
