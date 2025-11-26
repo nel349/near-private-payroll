@@ -33,6 +33,9 @@ Employee → Contract (RISC Zero verification) → Verifier (Bank)
 | 4.2 | Implement Groth16 verification | ✅ DONE | Using NEAR alt_bn128 precompiles |
 | 5.1 | SDK updates | ⏳ PENDING | After circuits |
 | 6.1 | Testnet deployment | ⏳ PENDING | Final phase |
+| 7.1 | EZKL/zkML infrastructure | 📋 PLANNED | ML-based proof support |
+| 7.2 | EZKL proof verification in contracts | 📋 PLANNED | Dual proof system |
+| 7.3 | ML model development | 📋 PLANNED | Credit scoring, fraud detection |
 
 ---
 
@@ -452,6 +455,149 @@ fn verify_risc_zero_proof(...) -> (bool, bool, u32) {
 
 ---
 
+## Future Enhancement: EZKL/zkML Support
+
+### Background: RISC Zero vs EZKL
+
+The current architecture uses **RISC Zero** for ZK proofs. However, for sophisticated ML-based computations (fraud detection, real credit scoring), **EZKL** provides a more suitable approach.
+
+| Aspect | RISC Zero | EZKL (zkML) |
+|--------|-----------|-------------|
+| **Input** | Rust guest programs | PyTorch/ONNX models |
+| **Optimized For** | General computation | Neural network inference |
+| **Use Cases** | Threshold checks, range proofs | Trained ML models, pattern recognition |
+| **Proof Generation** | risc0-zkvm | EZKL Python workflow |
+| **Complexity** | Simple arithmetic | Complex ML operations |
+
+### Current RISC Zero Circuits (Simple Proofs)
+
+```
+income-proof/
+├── IncomeThreshold    → sum(payments) >= threshold
+├── IncomeRange        → min <= income <= max
+├── AverageIncome      → avg(payments) >= threshold
+└── CreditScore        → simple ±10% consistency check
+```
+
+### Proposed EZKL Models (ML-Based Proofs)
+
+For more sophisticated analysis requiring trained models:
+
+```
+zkml/
+├── FraudDetectionModel     → Neural network trained on payment patterns
+├── CreditScoringModel      → Real credit model (not just consistency)
+├── IncomeStabilityModel    → Variance/trend analysis with ML
+├── RiskAssessmentModel     → Multi-factor risk scoring
+└── AnomalyDetectionModel   → Detect unusual payment patterns
+```
+
+### Architecture with EZKL Support
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DUAL PROOF SYSTEM ARCHITECTURE                        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+                         ┌─────────────────────┐
+                         │   Employee Client   │
+                         │  (private data)     │
+                         └──────────┬──────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │                               │
+                    ▼                               ▼
+        ┌───────────────────┐           ┌───────────────────┐
+        │    RISC Zero      │           │      EZKL         │
+        │  (Simple Proofs)  │           │  (ML-Based Proofs)│
+        ├───────────────────┤           ├───────────────────┤
+        │ • Threshold       │           │ • Credit Scoring  │
+        │ • Range           │           │ • Fraud Detection │
+        │ • Average         │           │ • Risk Assessment │
+        └─────────┬─────────┘           └─────────┬─────────┘
+                  │                               │
+                  │  STARK → Groth16              │  ONNX → ZK Circuit
+                  │  (Bonsai)                     │  (EZKL workflow)
+                  │                               │
+                  └───────────────┬───────────────┘
+                                  │
+                                  ▼
+                    ┌───────────────────────────┐
+                    │      ZK Verifier          │
+                    │  (NEAR Contract)          │
+                    ├───────────────────────────┤
+                    │ • verify_risc_zero()      │
+                    │ • verify_ezkl()           │
+                    │ • Unified output format   │
+                    └───────────────────────────┘
+```
+
+### EZKL Integration Plan
+
+#### Phase 1: Infrastructure Setup
+- Add zkml/ directory with Python environment
+- Port model definitions from zkSalaria
+- Set up EZKL proof generation workflow
+- Generate verification keys for each model
+
+#### Phase 2: Contract Updates
+- Add EZKL proof verification to zk-verifier contract
+- Register EZKL circuit verification keys
+- Add proof type routing (RISC Zero vs EZKL)
+- Unified journal/output format
+
+#### Phase 3: Model Development
+- Train real credit scoring model on payment patterns
+- Develop fraud detection neural network
+- Create income stability analysis model
+- Calibrate models for ZK circuit constraints
+
+#### Phase 4: SDK Integration
+- Add EZKL proof generation to TypeScript SDK
+- Python SDK for ML model training
+- Client-side proof generation workflow
+- Model versioning and updates
+
+### EZKL Proof Types (Proposed)
+
+```typescript
+enum EzklProofType {
+  // Trained ML models
+  CreditScore = 'CreditScore',        // Real credit scoring model
+  FraudRisk = 'FraudRisk',            // Fraud detection network
+  IncomeStability = 'IncomeStability', // Trend/variance analysis
+
+  // Complex computations
+  TaxBracket = 'TaxBracket',          // Annualized income bracket
+  FirstTimeLoan = 'FirstTimeLoan',    // Loan eligibility with variance
+}
+```
+
+### Why Both Systems?
+
+**RISC Zero for:**
+- Simple threshold/range proofs (fast, low overhead)
+- Payment verification (amount matches commitment)
+- Balance proofs
+
+**EZKL for:**
+- Credit scoring with trained models
+- Fraud detection requiring pattern recognition
+- Complex financial analysis needing ML
+- Any computation that benefits from neural networks
+
+### Implementation Priority
+
+| Priority | Feature | Rationale |
+|----------|---------|-----------|
+| P0 | RISC Zero basics | Core functionality, simpler |
+| P1 | EZKL infrastructure | Enable ML-based proofs |
+| P2 | Credit scoring model | High value use case |
+| P3 | Fraud detection | Security enhancement |
+| P4 | Advanced models | Future expansion |
+
+---
+
 ## File Changes Summary
 
 ### Modified Files
@@ -470,3 +616,15 @@ fn verify_risc_zero_proof(...) -> (bool, bool, u32) {
 | `contracts/zk-verifier/src/groth16.rs` | Groth16 verification logic |
 | `contracts/zk-verifier/src/journal.rs` | Journal decoding |
 | `sdk/src/proof.ts` | Proof generation helpers |
+
+### Planned Files (EZKL/zkML Support)
+
+| File | Purpose |
+|------|---------|
+| `zkml/` | EZKL/zkML infrastructure directory |
+| `zkml/models/credit_score.py` | Credit scoring neural network |
+| `zkml/models/fraud_detection.py` | Fraud detection model |
+| `zkml/generated/` | Compiled circuits and keys |
+| `zkml/src/prover.ts` | TypeScript proof generation |
+| `contracts/zk-verifier/src/ezkl.rs` | EZKL proof verification |
+| `sdk/src/zkml.ts` | zkML SDK integration |
