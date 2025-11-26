@@ -82,6 +82,7 @@ export class ZkVerifier {
         'verify_income_range',
         'verify_credit_score',
       ],
+      useLocalViewExecution: false,
     }) as Contract & VerifierContractMethods;
   }
 

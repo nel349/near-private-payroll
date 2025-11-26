@@ -69,6 +69,7 @@ export class WZecToken {
         'ft_transfer',
         'ft_transfer_call',
       ],
+      useLocalViewExecution: false,
     }) as Contract & WZecContractMethods;
   }
 

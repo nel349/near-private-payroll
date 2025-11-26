@@ -4,6 +4,7 @@ members = [
     "contracts/payroll",
     "contracts/wzec-token",
     "contracts/zk-verifier",
+    "contracts/intents-adapter",
     "circuits/payment-proof",
     "circuits/income-proof",
     "circuits/balance-proof",
