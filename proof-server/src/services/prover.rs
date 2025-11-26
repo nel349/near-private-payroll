@@ -8,7 +8,10 @@ use crate::types::{
     IncomeRangeRequest, IncomeThresholdRequest, PaymentProofRequest, ProofPublicInputs,
     ProofResult, ProofType,
 };
+use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, VerifierContext};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use std::time::Instant;
 use thiserror::Error;
 use tracing::{error, info, instrument};
@@ -26,28 +29,136 @@ pub enum ProverError {
 }
 
 /// Image IDs for each circuit (computed from circuit ELF)
-/// These are placeholders - real values come from building circuits with `cargo risczero build`
+/// Built with `cargo risczero build` in circuits/ directory
 pub struct ImageIds {
-    pub income_threshold: [u8; 32],
-    pub income_range: [u8; 32],
-    pub average_income: [u8; 32],
-    pub credit_score: [u8; 32],
+    /// Income proof circuit handles all income proof types (threshold, range, average, credit score)
+    pub income: [u8; 32],
     pub payment: [u8; 32],
     pub balance: [u8; 32],
 }
 
+/// Real Image IDs from built circuits
+/// income-proof: 41b4f8f0b0e6b73b23b7184ee3db29ac53ef58552cef3703a08a3a558b0cf6ba
+/// payment-proof: ce4e05f46415f148641544d55a7e5ab0172071adcd9b32d22ba7515bea42b4c2
+/// balance-proof: 07bba158a57dac5d87de94b8935536953ef30405e4d76b0428cb923f4f798c90
 impl Default for ImageIds {
     fn default() -> Self {
-        // Placeholder image IDs - replace with actual after building circuits
         Self {
-            income_threshold: [0x01; 32],
-            income_range: [0x02; 32],
-            average_income: [0x03; 32],
-            credit_score: [0x04; 32],
-            payment: [0x05; 32],
-            balance: [0x06; 32],
+            income: hex_to_bytes("41b4f8f0b0e6b73b23b7184ee3db29ac53ef58552cef3703a08a3a558b0cf6ba"),
+            payment: hex_to_bytes("ce4e05f46415f148641544d55a7e5ab0172071adcd9b32d22ba7515bea42b4c2"),
+            balance: hex_to_bytes("07bba158a57dac5d87de94b8935536953ef30405e4d76b0428cb923f4f798c90"),
         }
     }
+}
+
+/// Convert hex string to 32-byte array
+fn hex_to_bytes(hex: &str) -> [u8; 32] {
+    let bytes = hex::decode(hex).expect("Invalid hex string");
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    arr
+}
+
+// ============================================================================
+// Circuit Input Structures (must match circuit expectations exactly)
+// ============================================================================
+
+/// Proof type identifiers (must match income-proof circuit constants)
+const PROOF_TYPE_THRESHOLD: u8 = 1;
+const PROOF_TYPE_RANGE: u8 = 2;
+const PROOF_TYPE_AVERAGE: u8 = 3;
+const PROOF_TYPE_CREDIT_SCORE: u8 = 4;
+
+/// Input for threshold proof (income-proof circuit)
+#[derive(Serialize, Deserialize)]
+struct ThresholdInput {
+    payment_history: Vec<u64>,
+    threshold: u64,
+    history_commitment: [u8; 32],
+}
+
+/// Input for range proof (income-proof circuit)
+#[derive(Serialize, Deserialize)]
+struct RangeInput {
+    payment_history: Vec<u64>,
+    min: u64,
+    max: u64,
+    history_commitment: [u8; 32],
+}
+
+/// Input for average income proof (income-proof circuit)
+#[derive(Serialize, Deserialize)]
+struct AverageInput {
+    payment_history: Vec<u64>,
+    threshold: u64,
+    history_commitment: [u8; 32],
+}
+
+/// Input for credit score proof (income-proof circuit)
+#[derive(Serialize, Deserialize)]
+struct CreditScoreInput {
+    payment_history: Vec<u64>,
+    expected_salary: u64,
+    threshold: u32,
+    history_commitment: [u8; 32],
+}
+
+/// Input for payment proof circuit
+#[derive(Serialize, Deserialize)]
+struct PaymentProofInput {
+    salary: u64,
+    salary_blinding: [u8; 32],
+    payment_amount: u64,
+    payment_blinding: [u8; 32],
+}
+
+/// Input for balance proof circuit
+#[derive(Serialize, Deserialize)]
+struct BalanceProofInput {
+    balance: u64,
+    blinding: [u8; 32],
+    withdrawal_amount: u64,
+}
+
+// ============================================================================
+// Circuit Output Structures (must match circuit journal format exactly)
+// These are what get serialized to the journal by env::commit()
+// ============================================================================
+
+/// Output for threshold proof (also used for average income)
+#[derive(Serialize, Deserialize, Debug)]
+struct ThresholdOutput {
+    threshold: u64,
+    meets_threshold: bool,
+    payment_count: u32,
+    history_commitment: [u8; 32],
+}
+
+/// Output for range proof
+#[derive(Serialize, Deserialize, Debug)]
+struct RangeOutput {
+    min: u64,
+    max: u64,
+    in_range: bool,
+    payment_count: u32,
+    history_commitment: [u8; 32],
+}
+
+/// Output for credit score proof
+#[derive(Serialize, Deserialize, Debug)]
+struct CreditScoreOutput {
+    threshold: u32,
+    meets_threshold: bool,
+    payment_count: u32,
+    history_commitment: [u8; 32],
+}
+
+/// Output for payment proof
+#[derive(Serialize, Deserialize, Debug)]
+struct PaymentOutput {
+    salary_commitment: [u8; 32],
+    payment_commitment: [u8; 32],
+    amounts_match: bool,
 }
 
 /// Prover configuration
@@ -59,14 +170,22 @@ pub struct ProverConfig {
     pub bonsai_api_key: Option<String>,
     /// Development mode - generate mock proofs
     pub dev_mode: bool,
+    /// Path to circuit ELF binaries directory
+    pub elf_dir: PathBuf,
 }
 
 impl Default for ProverConfig {
     fn default() -> Self {
+        // Default ELF directory relative to project root
+        let elf_dir = std::env::var("ELF_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("target/riscv32im-risc0-zkvm-elf/docker"));
+
         Self {
             use_bonsai: false,
             bonsai_api_key: None,
             dev_mode: cfg!(feature = "dev-mode"),
+            elf_dir,
         }
     }
 }
@@ -91,21 +210,26 @@ impl ProverService {
         let use_bonsai = std::env::var("USE_BONSAI").unwrap_or_default() == "true";
         let bonsai_api_key = std::env::var("BONSAI_API_KEY").ok();
         let dev_mode = std::env::var("DEV_MODE").unwrap_or_default() == "true";
+        let elf_dir = std::env::var("ELF_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("target/riscv32im-risc0-zkvm-elf/docker"));
 
         Self::new(ProverConfig {
             use_bonsai,
             bonsai_api_key,
             dev_mode,
+            elf_dir,
         })
     }
 
     /// Get image ID for a proof type
     pub fn get_image_id(&self, proof_type: ProofType) -> [u8; 32] {
         match proof_type {
-            ProofType::IncomeThreshold => self.image_ids.income_threshold,
-            ProofType::IncomeRange => self.image_ids.income_range,
-            ProofType::AverageIncome => self.image_ids.average_income,
-            ProofType::CreditScore => self.image_ids.credit_score,
+            // All income proof types use the same circuit (differentiated by proof_type byte input)
+            ProofType::IncomeThreshold
+            | ProofType::IncomeRange
+            | ProofType::AverageIncome
+            | ProofType::CreditScore => self.image_ids.income,
             ProofType::Payment => self.image_ids.payment,
             ProofType::Balance => self.image_ids.balance,
         }
@@ -155,25 +279,131 @@ impl ProverService {
         &self,
         request: GenerateProofRequest,
     ) -> Result<(Vec<u8>, [u8; 32], Vec<u8>), ProverError> {
-        // TODO: Implement actual RISC Zero proof generation
-        // This requires:
-        // 1. Loading the circuit ELF
-        // 2. Creating executor environment with inputs
-        // 3. Running the prover
-        // 4. Serializing the receipt
+        info!("Generating real STARK proof locally");
 
-        // For now, return error indicating real proving is not yet implemented
-        Err(ProverError::GenerationFailed(
-            "Local proving requires RISC Zero toolchain. Install with: curl -L https://risczero.com/install | bash && rzup install".to_string()
-        ))
+        // Determine which circuit to use and prepare inputs
+        let (elf_name, proof_type, env) = match &request {
+            GenerateProofRequest::IncomeThreshold(req) => {
+                let input = ThresholdInput {
+                    payment_history: req.payment_history.clone(),
+                    threshold: req.threshold,
+                    history_commitment: req.history_commitment,
+                };
+                let env = ExecutorEnv::builder()
+                    .write(&PROOF_TYPE_THRESHOLD)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .write(&input)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .build()
+                    .map_err(|e| ProverError::GenerationFailed(e.to_string()))?;
+                ("income-proof.bin", ProofType::IncomeThreshold, env)
+            }
+            GenerateProofRequest::IncomeRange(req) => {
+                let input = RangeInput {
+                    payment_history: req.payment_history.clone(),
+                    min: req.min,
+                    max: req.max,
+                    history_commitment: req.history_commitment,
+                };
+                let env = ExecutorEnv::builder()
+                    .write(&PROOF_TYPE_RANGE)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .write(&input)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .build()
+                    .map_err(|e| ProverError::GenerationFailed(e.to_string()))?;
+                ("income-proof.bin", ProofType::IncomeRange, env)
+            }
+            GenerateProofRequest::AverageIncome(req) => {
+                let input = AverageInput {
+                    payment_history: req.payment_history.clone(),
+                    threshold: req.threshold,
+                    history_commitment: req.history_commitment,
+                };
+                let env = ExecutorEnv::builder()
+                    .write(&PROOF_TYPE_AVERAGE)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .write(&input)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .build()
+                    .map_err(|e| ProverError::GenerationFailed(e.to_string()))?;
+                ("income-proof.bin", ProofType::AverageIncome, env)
+            }
+            GenerateProofRequest::CreditScore(req) => {
+                let input = CreditScoreInput {
+                    payment_history: req.payment_history.clone(),
+                    expected_salary: req.expected_salary,
+                    threshold: req.threshold,
+                    history_commitment: req.history_commitment,
+                };
+                let env = ExecutorEnv::builder()
+                    .write(&PROOF_TYPE_CREDIT_SCORE)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .write(&input)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .build()
+                    .map_err(|e| ProverError::GenerationFailed(e.to_string()))?;
+                ("income-proof.bin", ProofType::CreditScore, env)
+            }
+            GenerateProofRequest::Payment(req) => {
+                let input = PaymentProofInput {
+                    salary: req.salary,
+                    salary_blinding: req.salary_blinding,
+                    payment_amount: req.payment_amount,
+                    payment_blinding: req.payment_blinding,
+                };
+                let env = ExecutorEnv::builder()
+                    .write(&input)
+                    .map_err(|e| ProverError::SerializationError(e.to_string()))?
+                    .build()
+                    .map_err(|e| ProverError::GenerationFailed(e.to_string()))?;
+                ("payment-proof.bin", ProofType::Payment, env)
+            }
+        };
+
+        // Load the circuit ELF
+        let elf_path = self.config.elf_dir.join(elf_name);
+        info!(?elf_path, "Loading circuit ELF");
+
+        let elf = std::fs::read(&elf_path).map_err(|e| {
+            ProverError::CircuitNotFound(format!("Failed to read ELF at {:?}: {}", elf_path, e))
+        })?;
+
+        // Get the prover and generate proof
+        let prover = default_prover();
+        info!("Starting proof generation (this may take a while)...");
+
+        let prove_info = prover
+            .prove_with_ctx(
+                env,
+                &VerifierContext::default(),
+                &elf,
+                &ProverOpts::groth16(),
+            )
+            .map_err(|e| ProverError::GenerationFailed(format!("Prover error: {}", e)))?;
+
+        let receipt = prove_info.receipt;
+        info!(
+            "Proof generated successfully, journal size: {} bytes",
+            receipt.journal.bytes.len()
+        );
+
+        // Get image ID from receipt
+        let image_id = self.get_image_id(proof_type);
+
+        // Serialize the receipt for transmission
+        let proof_bytes = bincode::serialize(&receipt)
+            .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+
+        Ok((proof_bytes, image_id, receipt.journal.bytes.clone()))
     }
 
     /// Generate proof using Bonsai API
     async fn generate_bonsai_proof(
         &self,
-        request: GenerateProofRequest,
+        _request: GenerateProofRequest,
     ) -> Result<(Vec<u8>, [u8; 32], Vec<u8>), ProverError> {
-        let api_key = self.config.bonsai_api_key.as_ref().ok_or_else(|| {
+        let _api_key = self.config.bonsai_api_key.as_ref().ok_or_else(|| {
             ProverError::GenerationFailed("Bonsai API key not configured".to_string())
         })?;
 
@@ -232,7 +462,8 @@ impl ProverService {
         Ok((proof, image_id, journal))
     }
 
-    /// Create journal for income threshold proof
+    /// Create journal for income threshold proof using RISC Zero's fixed-size LE format
+    /// Format: threshold(u64/8) + meets_threshold(u32/4) + payment_count(u32/4) + history_commitment(32) = 48 bytes
     fn create_income_threshold_journal(
         &self,
         req: &IncomeThresholdRequest,
@@ -244,16 +475,16 @@ impl ProverService {
         let current_income = *req.payment_history.last().unwrap();
         let meets_threshold = current_income >= req.threshold;
 
-        let mut journal = Vec::new();
-        journal.extend_from_slice(&req.threshold.to_le_bytes()); // 8 bytes
-        journal.push(meets_threshold as u8); // 1 byte
-        journal.extend_from_slice(&(req.payment_history.len() as u32).to_le_bytes()); // 4 bytes
-        journal.extend_from_slice(&req.history_commitment); // 32 bytes
-
+        let mut journal = Vec::with_capacity(48);
+        journal.extend_from_slice(&req.threshold.to_le_bytes());
+        journal.extend_from_slice(&(meets_threshold as u32).to_le_bytes());
+        journal.extend_from_slice(&(req.payment_history.len() as u32).to_le_bytes());
+        journal.extend_from_slice(&req.history_commitment);
         Ok(journal)
     }
 
-    /// Create journal for income range proof
+    /// Create journal for income range proof using RISC Zero's fixed-size LE format
+    /// Format: min(u64/8) + max(u64/8) + in_range(u32/4) + payment_count(u32/4) + history_commitment(32) = 56 bytes
     fn create_income_range_journal(
         &self,
         req: &IncomeRangeRequest,
@@ -268,17 +499,17 @@ impl ProverService {
         let current_income = *req.payment_history.last().unwrap();
         let in_range = current_income >= req.min && current_income <= req.max;
 
-        let mut journal = Vec::new();
-        journal.extend_from_slice(&req.min.to_le_bytes()); // 8 bytes
-        journal.extend_from_slice(&req.max.to_le_bytes()); // 8 bytes
-        journal.push(in_range as u8); // 1 byte
-        journal.extend_from_slice(&(req.payment_history.len() as u32).to_le_bytes()); // 4 bytes
-        journal.extend_from_slice(&req.history_commitment); // 32 bytes
-
+        let mut journal = Vec::with_capacity(56);
+        journal.extend_from_slice(&req.min.to_le_bytes());
+        journal.extend_from_slice(&req.max.to_le_bytes());
+        journal.extend_from_slice(&(in_range as u32).to_le_bytes());
+        journal.extend_from_slice(&(req.payment_history.len() as u32).to_le_bytes());
+        journal.extend_from_slice(&req.history_commitment);
         Ok(journal)
     }
 
-    /// Create journal for average income proof
+    /// Create journal for average income proof using RISC Zero's fixed-size LE format
+    /// Format: threshold(u64/8) + meets_threshold(u32/4) + payment_count(u32/4) + history_commitment(32) = 48 bytes
     fn create_average_income_journal(
         &self,
         req: &AverageIncomeRequest,
@@ -292,16 +523,16 @@ impl ProverService {
         let average = total / count;
         let meets_threshold = average >= req.threshold;
 
-        let mut journal = Vec::new();
-        journal.extend_from_slice(&req.threshold.to_le_bytes()); // 8 bytes
-        journal.push(meets_threshold as u8); // 1 byte
-        journal.extend_from_slice(&(req.payment_history.len() as u32).to_le_bytes()); // 4 bytes
-        journal.extend_from_slice(&req.history_commitment); // 32 bytes
-
+        let mut journal = Vec::with_capacity(48);
+        journal.extend_from_slice(&req.threshold.to_le_bytes());
+        journal.extend_from_slice(&(meets_threshold as u32).to_le_bytes());
+        journal.extend_from_slice(&(req.payment_history.len() as u32).to_le_bytes());
+        journal.extend_from_slice(&req.history_commitment);
         Ok(journal)
     }
 
-    /// Create journal for credit score proof
+    /// Create journal for credit score proof using RISC Zero's fixed-size LE format
+    /// Format: threshold(u32/4) + meets_threshold(u32/4) + payment_count(u32/4) + history_commitment(32) = 44 bytes
     fn create_credit_score_journal(
         &self,
         req: &CreditScoreRequest,
@@ -331,27 +562,26 @@ impl ProverService {
         let score = score.clamp(300, 850) as u32;
         let meets_threshold = score >= req.threshold;
 
-        let mut journal = Vec::new();
-        journal.extend_from_slice(&req.threshold.to_le_bytes()); // 4 bytes
-        journal.push(meets_threshold as u8); // 1 byte
-        journal.extend_from_slice(&(req.payment_history.len() as u32).to_le_bytes()); // 4 bytes
-        journal.extend_from_slice(&req.history_commitment); // 32 bytes
-
+        let mut journal = Vec::with_capacity(44);
+        journal.extend_from_slice(&req.threshold.to_le_bytes());
+        journal.extend_from_slice(&(meets_threshold as u32).to_le_bytes());
+        journal.extend_from_slice(&(req.payment_history.len() as u32).to_le_bytes());
+        journal.extend_from_slice(&req.history_commitment);
         Ok(journal)
     }
 
-    /// Create journal for payment proof
+    /// Create journal for payment proof using RISC Zero's fixed-size LE format
+    /// Format: salary_commitment(32) + payment_commitment(32) + amounts_match(u32/4) = 68 bytes
     fn create_payment_journal(&self, req: &PaymentProofRequest) -> Result<Vec<u8>, ProverError> {
         let salary_commitment = Self::compute_commitment(req.salary, &req.salary_blinding);
         let payment_commitment =
             Self::compute_commitment(req.payment_amount, &req.payment_blinding);
         let amounts_match = req.salary == req.payment_amount;
 
-        let mut journal = Vec::new();
-        journal.extend_from_slice(&salary_commitment); // 32 bytes
-        journal.extend_from_slice(&payment_commitment); // 32 bytes
-        journal.push(amounts_match as u8); // 1 byte
-
+        let mut journal = Vec::with_capacity(68);
+        journal.extend_from_slice(&salary_commitment);
+        journal.extend_from_slice(&payment_commitment);
+        journal.extend_from_slice(&(amounts_match as u32).to_le_bytes());
         Ok(journal)
     }
 
@@ -365,19 +595,31 @@ impl ProverService {
     }
 
     /// Parse public inputs from journal bytes
+    /// RISC Zero uses fixed-size little-endian encoding, NOT postcard varint!
+    /// - u64: 8 bytes LE
+    /// - bool: 4 bytes LE (treated as u32)
+    /// - u32: 4 bytes LE
+    /// - [u8; N]: N bytes raw
     pub fn parse_public_inputs(
         proof_type: ProofType,
         journal: &[u8],
     ) -> Result<ProofPublicInputs, ProverError> {
         match proof_type {
             ProofType::IncomeThreshold | ProofType::AverageIncome => {
-                if journal.len() < 45 {
-                    return Err(ProverError::InvalidInput("Journal too short".to_string()));
+                // ThresholdOutput: threshold(u64) + meets_threshold(bool/u32) + payment_count(u32) + history_commitment([u8;32])
+                // Total: 8 + 4 + 4 + 32 = 48 bytes
+                if journal.len() < 48 {
+                    return Err(ProverError::SerializationError(format!(
+                        "Journal too short for ThresholdOutput: {} bytes, expected 48",
+                        journal.len()
+                    )));
                 }
+
                 let threshold = u64::from_le_bytes(journal[0..8].try_into().unwrap());
-                let meets_threshold = journal[8] != 0;
-                let payment_count = u32::from_le_bytes(journal[9..13].try_into().unwrap());
-                let history_commitment: [u8; 32] = journal[13..45].try_into().unwrap();
+                let meets_threshold = u32::from_le_bytes(journal[8..12].try_into().unwrap()) != 0;
+                let payment_count = u32::from_le_bytes(journal[12..16].try_into().unwrap());
+                let mut history_commitment = [0u8; 32];
+                history_commitment.copy_from_slice(&journal[16..48]);
 
                 Ok(ProofPublicInputs::IncomeThreshold {
                     threshold,
@@ -387,14 +629,21 @@ impl ProverService {
                 })
             }
             ProofType::IncomeRange => {
-                if journal.len() < 53 {
-                    return Err(ProverError::InvalidInput("Journal too short".to_string()));
+                // RangeOutput: min(u64) + max(u64) + in_range(bool/u32) + payment_count(u32) + history_commitment([u8;32])
+                // Total: 8 + 8 + 4 + 4 + 32 = 56 bytes
+                if journal.len() < 56 {
+                    return Err(ProverError::SerializationError(format!(
+                        "Journal too short for RangeOutput: {} bytes, expected 56",
+                        journal.len()
+                    )));
                 }
+
                 let min = u64::from_le_bytes(journal[0..8].try_into().unwrap());
                 let max = u64::from_le_bytes(journal[8..16].try_into().unwrap());
-                let in_range = journal[16] != 0;
-                let payment_count = u32::from_le_bytes(journal[17..21].try_into().unwrap());
-                let history_commitment: [u8; 32] = journal[21..53].try_into().unwrap();
+                let in_range = u32::from_le_bytes(journal[16..20].try_into().unwrap()) != 0;
+                let payment_count = u32::from_le_bytes(journal[20..24].try_into().unwrap());
+                let mut history_commitment = [0u8; 32];
+                history_commitment.copy_from_slice(&journal[24..56]);
 
                 Ok(ProofPublicInputs::IncomeRange {
                     min,
@@ -405,13 +654,20 @@ impl ProverService {
                 })
             }
             ProofType::CreditScore => {
-                if journal.len() < 41 {
-                    return Err(ProverError::InvalidInput("Journal too short".to_string()));
+                // CreditScoreOutput: threshold(u32) + meets_threshold(bool/u32) + payment_count(u32) + history_commitment([u8;32])
+                // Total: 4 + 4 + 4 + 32 = 44 bytes
+                if journal.len() < 44 {
+                    return Err(ProverError::SerializationError(format!(
+                        "Journal too short for CreditScoreOutput: {} bytes, expected 44",
+                        journal.len()
+                    )));
                 }
+
                 let threshold = u32::from_le_bytes(journal[0..4].try_into().unwrap());
-                let meets_threshold = journal[4] != 0;
-                let payment_count = u32::from_le_bytes(journal[5..9].try_into().unwrap());
-                let history_commitment: [u8; 32] = journal[9..41].try_into().unwrap();
+                let meets_threshold = u32::from_le_bytes(journal[4..8].try_into().unwrap()) != 0;
+                let payment_count = u32::from_le_bytes(journal[8..12].try_into().unwrap());
+                let mut history_commitment = [0u8; 32];
+                history_commitment.copy_from_slice(&journal[12..44]);
 
                 Ok(ProofPublicInputs::CreditScore {
                     threshold,
@@ -421,12 +677,20 @@ impl ProverService {
                 })
             }
             ProofType::Payment => {
-                if journal.len() < 65 {
-                    return Err(ProverError::InvalidInput("Journal too short".to_string()));
+                // PaymentOutput: salary_commitment([u8;32]) + payment_commitment([u8;32]) + amounts_match(bool/u32)
+                // Total: 32 + 32 + 4 = 68 bytes
+                if journal.len() < 68 {
+                    return Err(ProverError::SerializationError(format!(
+                        "Journal too short for PaymentOutput: {} bytes, expected 68",
+                        journal.len()
+                    )));
                 }
-                let salary_commitment: [u8; 32] = journal[0..32].try_into().unwrap();
-                let payment_commitment: [u8; 32] = journal[32..64].try_into().unwrap();
-                let amounts_match = journal[64] != 0;
+
+                let mut salary_commitment = [0u8; 32];
+                salary_commitment.copy_from_slice(&journal[0..32]);
+                let mut payment_commitment = [0u8; 32];
+                payment_commitment.copy_from_slice(&journal[32..64]);
+                let amounts_match = u32::from_le_bytes(journal[64..68].try_into().unwrap()) != 0;
 
                 Ok(ProofPublicInputs::Payment {
                     salary_commitment,

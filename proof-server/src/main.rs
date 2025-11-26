@@ -102,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         use_bonsai: config.use_bonsai,
         bonsai_api_key: config.bonsai_api_key.clone(),
         dev_mode: config.dev_mode,
+        elf_dir: config.elf_dir.clone(),
     };
 
     if config.dev_mode {

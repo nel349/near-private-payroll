@@ -1,0 +1,7 @@
+# Cargo configuration for NEAR Private Payroll
+# This sets environment variables for `cargo run`
+
+[env]
+# Path to RISC Zero circuit ELF binaries (built with `cargo risczero build`)
+# Uses relative path from project root - Cargo runs from workspace root
+ELF_DIR = { value = "target/riscv32im-risc0-zkvm-elf/docker", relative = true }

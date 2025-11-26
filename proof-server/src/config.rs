@@ -4,6 +4,7 @@
 
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 /// Server configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -49,6 +50,10 @@ pub struct Config {
     /// Maximum concurrent proof requests
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_proofs: usize,
+
+    /// Path to circuit ELF binaries directory
+    #[serde(default = "default_elf_dir")]
+    pub elf_dir: PathBuf,
 }
 
 fn default_host() -> String {
@@ -71,6 +76,43 @@ fn default_max_concurrent() -> usize {
     10
 }
 
+fn default_elf_dir() -> PathBuf {
+    // Try to resolve to absolute path from current directory
+    // This way the server works regardless of where it's started from
+    let relative_path = PathBuf::from("target/riscv32im-risc0-zkvm-elf/docker");
+
+    // Check if the path exists relative to current directory
+    if relative_path.exists() {
+        // Convert to absolute path
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&relative_path))
+            .unwrap_or(relative_path)
+    } else {
+        // Try finding from workspace root by looking for Cargo.toml
+        if let Ok(cwd) = std::env::current_dir() {
+            let workspace_target = cwd.join("target/riscv32im-risc0-zkvm-elf/docker");
+            if workspace_target.exists() {
+                return workspace_target;
+            }
+
+            // Try parent directories (in case running from a subdirectory)
+            let mut dir = cwd.clone();
+            for _ in 0..3 {
+                if let Some(parent) = dir.parent() {
+                    dir = parent.to_path_buf();
+                    let candidate = dir.join("target/riscv32im-risc0-zkvm-elf/docker");
+                    if candidate.exists() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+
+        // Fall back to relative path
+        relative_path
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -85,6 +127,7 @@ impl Default for Config {
             json_logs: false,
             cors_origins: default_cors_origins(),
             max_concurrent_proofs: default_max_concurrent(),
+            elf_dir: default_elf_dir(),
         }
     }
 }
@@ -115,6 +158,9 @@ impl Config {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or_else(default_max_concurrent),
+            elf_dir: std::env::var("ELF_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| default_elf_dir()),
         }
     }
 

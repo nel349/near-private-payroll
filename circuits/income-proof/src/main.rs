@@ -82,6 +82,38 @@ struct CreditScoreInput {
     history_commitment: [u8; 32],
 }
 
+// ============================================================================
+// Output Structures - committed to journal as single serialized objects
+// ============================================================================
+
+/// Output for threshold proof (also used for average income)
+#[derive(Serialize, Deserialize)]
+struct ThresholdOutput {
+    threshold: u64,
+    meets_threshold: bool,
+    payment_count: u32,
+    history_commitment: [u8; 32],
+}
+
+/// Output for range proof
+#[derive(Serialize, Deserialize)]
+struct RangeOutput {
+    min: u64,
+    max: u64,
+    in_range: bool,
+    payment_count: u32,
+    history_commitment: [u8; 32],
+}
+
+/// Output for credit score proof
+#[derive(Serialize, Deserialize)]
+struct CreditScoreOutput {
+    threshold: u32,
+    meets_threshold: bool,
+    payment_count: u32,
+    history_commitment: [u8; 32],
+}
+
 fn main() {
     // Read proof type
     let proof_type: u8 = env::read();
@@ -96,7 +128,7 @@ fn main() {
 }
 
 /// Prove income is above a threshold
-/// Journal format: [threshold: 8, meets_threshold: 1, payment_count: 4, history_commitment: 32] = 45 bytes
+/// Commits a single ThresholdOutput struct to the journal
 fn prove_income_threshold() {
     let input: ThresholdInput = env::read();
 
@@ -109,15 +141,18 @@ fn prove_income_threshold() {
     // Check if above threshold
     let meets_threshold = current_income >= input.threshold;
 
-    // Commit public outputs (journal)
-    env::commit(&input.threshold.to_le_bytes());                       // threshold: 8 bytes
-    env::commit(&(meets_threshold as u8));                              // meets_threshold: 1 byte
-    env::commit(&(input.payment_history.len() as u32).to_le_bytes());  // payment_count: 4 bytes
-    env::commit(&input.history_commitment);                             // history_commitment: 32 bytes
+    // Commit single output struct to journal
+    let output = ThresholdOutput {
+        threshold: input.threshold,
+        meets_threshold,
+        payment_count: input.payment_history.len() as u32,
+        history_commitment: input.history_commitment,
+    };
+    env::commit(&output);
 }
 
 /// Prove income is within a range
-/// Journal format: [min: 8, max: 8, in_range: 1, payment_count: 4, history_commitment: 32] = 53 bytes
+/// Commits a single RangeOutput struct to the journal
 fn prove_income_range() {
     let input: RangeInput = env::read();
 
@@ -128,16 +163,19 @@ fn prove_income_range() {
 
     let in_range = current_income >= input.min && current_income <= input.max;
 
-    // Commit public outputs (journal)
-    env::commit(&input.min.to_le_bytes());                             // min: 8 bytes
-    env::commit(&input.max.to_le_bytes());                             // max: 8 bytes
-    env::commit(&(in_range as u8));                                     // in_range: 1 byte
-    env::commit(&(input.payment_history.len() as u32).to_le_bytes());  // payment_count: 4 bytes
-    env::commit(&input.history_commitment);                             // history_commitment: 32 bytes
+    // Commit single output struct to journal
+    let output = RangeOutput {
+        min: input.min,
+        max: input.max,
+        in_range,
+        payment_count: input.payment_history.len() as u32,
+        history_commitment: input.history_commitment,
+    };
+    env::commit(&output);
 }
 
 /// Prove average income meets threshold
-/// Journal format: [threshold: 8, meets_threshold: 1, payment_count: 4, history_commitment: 32] = 45 bytes
+/// Commits a single ThresholdOutput struct to the journal
 fn prove_average_income() {
     let input: AverageInput = env::read();
 
@@ -150,16 +188,19 @@ fn prove_average_income() {
 
     let meets_threshold = average >= input.threshold;
 
-    // Commit public outputs (journal)
-    env::commit(&input.threshold.to_le_bytes());                       // threshold: 8 bytes
-    env::commit(&(meets_threshold as u8));                              // meets_threshold: 1 byte
-    env::commit(&(input.payment_history.len() as u32).to_le_bytes());  // payment_count: 4 bytes
-    env::commit(&input.history_commitment);                             // history_commitment: 32 bytes
+    // Commit single output struct to journal (same format as threshold proof)
+    let output = ThresholdOutput {
+        threshold: input.threshold,
+        meets_threshold,
+        payment_count: input.payment_history.len() as u32,
+        history_commitment: input.history_commitment,
+    };
+    env::commit(&output);
 }
 
 /// Prove credit score meets threshold
 /// Credit score is based on payment consistency
-/// Journal format: [threshold: 4, meets_threshold: 1, payment_count: 4, history_commitment: 32] = 41 bytes
+/// Commits a single CreditScoreOutput struct to the journal
 fn prove_credit_score() {
     let input: CreditScoreInput = env::read();
 
@@ -196,11 +237,14 @@ fn prove_credit_score() {
 
     let meets_threshold = score >= input.threshold;
 
-    // Commit public outputs (journal)
-    env::commit(&input.threshold.to_le_bytes());                       // threshold: 4 bytes
-    env::commit(&(meets_threshold as u8));                              // meets_threshold: 1 byte
-    env::commit(&(input.payment_history.len() as u32).to_le_bytes());  // payment_count: 4 bytes
-    env::commit(&input.history_commitment);                             // history_commitment: 32 bytes
+    // Commit single output struct to journal
+    let output = CreditScoreOutput {
+        threshold: input.threshold,
+        meets_threshold,
+        payment_count: input.payment_history.len() as u32,
+        history_commitment: input.history_commitment,
+    };
+    env::commit(&output);
 }
 
 #[cfg(test)]
