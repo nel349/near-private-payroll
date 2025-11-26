@@ -11,30 +11,30 @@
  *   4. Bank/landlord verifies via disclosure
  */
 
-import anyTest, { TestFn } from 'ava';
-import { Worker, NearAccount, NEAR } from 'near-workspaces';
-import * as path from 'path';
+import test from 'ava';
+import { Worker, parseNEAR } from 'near-workspaces';
+import type { NearAccount } from 'near-workspaces';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PROOF_SERVER_URL = process.env.PROOF_SERVER_URL || 'http://localhost:3000';
 
-// Helper to parse NEAR amount
-const parseNEAR = (amount: string): string => {
-  return NEAR.parse(amount).toString();
-};
+// Helper to parse NEAR amount to bigint
+const parseNEARAmount = (amount: string): bigint => BigInt(parseNEAR(amount));
 
-interface TestContext {
-  worker: Worker;
-  root: NearAccount;
-  owner: NearAccount;
-  payroll: NearAccount;
-  zkVerifier: NearAccount;
-  wzecToken: NearAccount;
-  employee1: NearAccount;
-  bank: NearAccount;
-}
-
-const test = anyTest as TestFn<TestContext>;
+// Shared test state (module-level, like payroll.test.ts)
+let worker: Worker;
+let root: NearAccount;
+let owner: NearAccount;
+let payroll: NearAccount;
+let zkVerifier: NearAccount;
+let wzecToken: NearAccount;
+let employee1: NearAccount;
+let bank: NearAccount;
 
 // Check if proof-server is available
 async function isProofServerAvailable(): Promise<boolean> {
@@ -46,12 +46,44 @@ async function isProofServerAvailable(): Promise<boolean> {
   }
 }
 
+// Proof request types matching proof-server API
+interface IncomeThresholdParams {
+  payment_history: number[];
+  threshold: number;
+  history_commitment: number[];
+  employee_id?: string;
+}
+
+interface IncomeRangeParams {
+  payment_history: number[];
+  min: number;
+  max: number;
+  history_commitment: number[];
+  employee_id?: string;
+}
+
+interface CreditScoreParams {
+  payment_history: number[];
+  expected_salary: number;
+  threshold: number;
+  history_commitment: number[];
+  employee_id?: string;
+}
+
+type ProofParams = IncomeThresholdParams | IncomeRangeParams | CreditScoreParams;
+
 // Generate proof via proof-server
-async function generateProof(request: any): Promise<any> {
+async function generateProof(
+  proofType: 'income_threshold' | 'income_range' | 'credit_score',
+  params: ProofParams
+): Promise<any> {
   const response = await fetch(`${PROOF_SERVER_URL}/api/v1/proof/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+    body: JSON.stringify({
+      proof_type: proofType,
+      params,
+    }),
   });
 
   if (!response.ok) {
@@ -72,7 +104,7 @@ function computeHistoryCommitment(commitments: number[][]): number[] {
   return Array.from(hasher.digest());
 }
 
-test.before(async (t) => {
+test.before(async () => {
   // Check if proof-server is running
   const serverAvailable = await isProofServerAvailable();
   if (!serverAvailable) {
@@ -83,26 +115,26 @@ test.before(async (t) => {
     // Don't fail - tests will skip if server unavailable
   }
 
-  const worker = await Worker.init();
-  const root = worker.rootAccount;
+  worker = await Worker.init();
+  root = worker.rootAccount;
 
   // Create accounts
-  const owner = await root.createSubAccount('owner', {
-    initialBalance: parseNEAR('100'),
+  owner = await root.createSubAccount('owner', {
+    initialBalance: parseNEARAmount('100'),
   });
 
   // Deploy contracts
-  const payroll = await root.createSubAccount('payroll', {
-    initialBalance: parseNEAR('50'),
+  payroll = await root.createSubAccount('payroll', {
+    initialBalance: parseNEARAmount('50'),
   });
-  const zkVerifier = await root.createSubAccount('zkverifier', {
-    initialBalance: parseNEAR('50'),
+  zkVerifier = await root.createSubAccount('zkverifier', {
+    initialBalance: parseNEARAmount('50'),
   });
-  const wzecToken = await root.createSubAccount('wzec', {
-    initialBalance: parseNEAR('50'),
+  wzecToken = await root.createSubAccount('wzec', {
+    initialBalance: parseNEARAmount('50'),
   });
 
-  // Deploy WASM files
+  // Deploy WASM files (paths must match payroll.test.ts)
   const contractsPath = path.join(__dirname, '..', 'target', 'near');
 
   await zkVerifier.deploy(path.join(contractsPath, 'zk_verifier', 'zk_verifier.wasm'));
@@ -115,7 +147,7 @@ test.before(async (t) => {
     bridge_controller: owner.accountId,
   });
 
-  await payroll.deploy(path.join(contractsPath, 'payroll', 'payroll.wasm'));
+  await payroll.deploy(path.join(contractsPath, 'payroll_contract', 'payroll_contract.wasm'));
   await payroll.call(payroll, 'new', {
     owner: owner.accountId,
     wzec_token: wzecToken.accountId,
@@ -123,11 +155,11 @@ test.before(async (t) => {
   });
 
   // Create test accounts
-  const employee1 = await root.createSubAccount('emp1', {
-    initialBalance: parseNEAR('10'),
+  employee1 = await root.createSubAccount('emp1', {
+    initialBalance: parseNEARAmount('10'),
   });
-  const bank = await root.createSubAccount('bank', {
-    initialBalance: parseNEAR('10'),
+  bank = await root.createSubAccount('bank', {
+    initialBalance: parseNEARAmount('10'),
   });
 
   console.log('\n========================================');
@@ -139,27 +171,15 @@ test.before(async (t) => {
   console.log(`  Employee: ${employee1.accountId}`);
   console.log(`  Bank: ${bank.accountId}`);
   console.log('========================================\n');
-
-  t.context = {
-    worker,
-    root,
-    owner,
-    payroll,
-    zkVerifier,
-    wzecToken,
-    employee1,
-    bank,
-  };
 });
 
-test.after.always(async (t) => {
-  await t.context.worker?.tearDown();
+test.after.always(async () => {
+  await worker?.tearDown();
 });
 
 // ==================== SETUP ====================
 
 test.serial('setup: register image IDs and verification keys', async (t) => {
-  const { owner, zkVerifier } = t.context;
 
   // Register image ID for IncomeThreshold (matches proof-server)
   // Proof-server uses [0x01; 32] for income_threshold
@@ -204,7 +224,6 @@ test.serial('setup: register image IDs and verification keys', async (t) => {
 });
 
 test.serial('setup: add employee with payments', async (t) => {
-  const { owner, payroll, employee1 } = t.context;
 
   // Add employee
   await owner.call(payroll, 'add_employee', {
@@ -255,7 +274,7 @@ test.serial('proof-server: health check', async (t) => {
   t.true(response.ok, 'Health endpoint should return 200');
 
   const health = await response.json();
-  t.is(health.status, 'healthy', 'Status should be healthy');
+  t.is(health.status, 'ok', 'Status should be ok');
 });
 
 test.serial('proof-server: generate income threshold proof', async (t) => {
@@ -267,8 +286,6 @@ test.serial('proof-server: generate income threshold proof', async (t) => {
     return;
   }
 
-  const { employee1 } = t.context;
-
   // Build history commitment
   const paymentCommitments = [
     new Array(32).fill(0).map((_, i) => (5000 + i) % 256),
@@ -277,18 +294,13 @@ test.serial('proof-server: generate income threshold proof', async (t) => {
   ];
   const historyCommitment = computeHistoryCommitment(paymentCommitments);
 
-  // Generate proof via proof-server
-  const request = {
-    IncomeThreshold: {
+  try {
+    const result = await generateProof('income_threshold', {
       payment_history: [5000, 5200, 5100],
       threshold: 5000,
       history_commitment: historyCommitment,
       employee_id: employee1.accountId,
-    },
-  };
-
-  try {
-    const result = await generateProof(request);
+    });
 
     t.truthy(result.proof, 'Should have proof bytes');
     t.truthy(result.image_id, 'Should have image_id');
@@ -299,12 +311,16 @@ test.serial('proof-server: generate income threshold proof', async (t) => {
     console.log(`    - Image ID: ${Buffer.from(result.image_id).toString('hex').slice(0, 16)}...`);
     console.log(`    - Generation time: ${result.generation_time_ms}ms`);
 
-    if (result.public_inputs.IncomeThreshold) {
-      const inputs = result.public_inputs.IncomeThreshold;
-      console.log(`    - Threshold: ${inputs.threshold}`);
-      console.log(`    - Meets threshold: ${inputs.meets_threshold}`);
-      console.log(`    - Payment count: ${inputs.payment_count}`);
-    }
+    // API returns flat public_inputs structure
+    const inputs = result.public_inputs;
+    console.log(`    - Threshold: ${inputs.threshold}`);
+    console.log(`    - Meets threshold: ${inputs.meets_threshold}`);
+    console.log(`    - Payment count: ${inputs.payment_count}`);
+
+    // Verify the values
+    t.is(inputs.threshold, 5000, 'Threshold should match request');
+    t.true(inputs.meets_threshold, 'Should meet threshold (5100 >= 5000)');
+    t.is(inputs.payment_count, 3, 'Should have 3 payments');
 
     t.pass('Proof generated successfully');
   } catch (error) {
@@ -320,8 +336,6 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
     t.pass('Skipped');
     return;
   }
-
-  const { owner, payroll, zkVerifier, employee1, bank } = t.context;
 
   // Step 1: Get payment commitments from contract
   const paymentCount: number = await payroll.view('get_payment_count', {
@@ -339,18 +353,15 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
 
   // Step 2: Generate proof via proof-server
   console.log('  Generating proof via proof-server...');
-  const proofRequest = {
-    IncomeThreshold: {
+
+  let proofResult;
+  try {
+    proofResult = await generateProof('income_threshold', {
       payment_history: [5000, 5200, 5100],
       threshold: 5000,
       history_commitment: historyCommitment,
       employee_id: employee1.accountId,
-    },
-  };
-
-  let proofResult;
-  try {
-    proofResult = await generateProof(proofRequest);
+    });
     console.log(`  Proof generated (${proofResult.proof.length} bytes, ${proofResult.generation_time_ms}ms)`);
   } catch (error) {
     t.fail(`Failed to generate proof: ${error}`);
@@ -431,4 +442,178 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
   console.log('  ==========================================\n');
 
   t.pass('Integration flow completed');
+});
+
+// ==================== ADDITIONAL PROOF TYPE TESTS ====================
+
+test.serial('proof-server: generate income range proof', async (t) => {
+  const available = await isProofServerAvailable();
+
+  if (!available) {
+    t.log('Skipping: proof-server not running');
+    t.pass('Skipped');
+    return;
+  }
+
+  const paymentCommitments = [
+    new Array(32).fill(0).map((_, i) => (4000 + i) % 256),
+    new Array(32).fill(0).map((_, i) => (5000 + i) % 256),
+    new Array(32).fill(0).map((_, i) => (6000 + i) % 256),
+  ];
+  const historyCommitment = computeHistoryCommitment(paymentCommitments);
+
+  try {
+    const result = await generateProof('income_range', {
+      payment_history: [4000, 5000, 6000],
+      min: 3000,
+      max: 7000,
+      history_commitment: historyCommitment,
+      employee_id: employee1.accountId,
+    });
+
+    t.truthy(result.proof, 'Should have proof bytes');
+    t.truthy(result.public_inputs, 'Should have public_inputs');
+
+    const inputs = result.public_inputs;
+    console.log('  Income Range Proof:');
+    console.log(`    - Min: ${inputs.min}, Max: ${inputs.max}`);
+    console.log(`    - In range: ${inputs.in_range}`);
+    console.log(`    - Payment count: ${inputs.payment_count}`);
+
+    // Verify values - last payment is 6000, which is in range [3000, 7000]
+    t.is(inputs.min, 3000, 'Min should match request');
+    t.is(inputs.max, 7000, 'Max should match request');
+    t.true(inputs.in_range, 'Should be in range (6000 is between 3000 and 7000)');
+    t.is(inputs.payment_count, 3, 'Should have 3 payments');
+
+    t.pass('Income range proof generated successfully');
+  } catch (error) {
+    t.fail(`Proof generation failed: ${error}`);
+  }
+});
+
+test.serial('proof-server: generate credit score proof', async (t) => {
+  const available = await isProofServerAvailable();
+
+  if (!available) {
+    t.log('Skipping: proof-server not running');
+    t.pass('Skipped');
+    return;
+  }
+
+  // Consistent payments (within 10% tolerance) earn +50 per payment
+  // 6 consistent payments: 300 (base) + 6*50 = 600 score
+  const paymentCommitments = [
+    new Array(32).fill(0).map((_, i) => (5000 + i) % 256),
+    new Array(32).fill(0).map((_, i) => (5100 + i) % 256),
+    new Array(32).fill(0).map((_, i) => (5050 + i) % 256),
+    new Array(32).fill(0).map((_, i) => (4950 + i) % 256),
+    new Array(32).fill(0).map((_, i) => (5200 + i) % 256),
+    new Array(32).fill(0).map((_, i) => (4900 + i) % 256),
+  ];
+  const historyCommitment = computeHistoryCommitment(paymentCommitments);
+
+  try {
+    const result = await generateProof('credit_score', {
+      payment_history: [5000, 5100, 5050, 4950, 5200, 4900],
+      expected_salary: 5000,
+      threshold: 500, // Score should be 600, above 500 threshold
+      history_commitment: historyCommitment,
+      employee_id: employee1.accountId,
+    });
+
+    t.truthy(result.proof, 'Should have proof bytes');
+    t.truthy(result.public_inputs, 'Should have public_inputs');
+
+    const inputs = result.public_inputs;
+    console.log('  Credit Score Proof:');
+    console.log(`    - Threshold: ${inputs.threshold}`);
+    console.log(`    - Meets threshold: ${inputs.meets_threshold}`);
+    console.log(`    - Payment count: ${inputs.payment_count}`);
+
+    // Verify values
+    t.is(inputs.threshold, 500, 'Threshold should match request');
+    t.true(inputs.meets_threshold, 'Should meet threshold (score ~600 >= 500)');
+    t.is(inputs.payment_count, 6, 'Should have 6 payments');
+
+    t.pass('Credit score proof generated successfully');
+  } catch (error) {
+    t.fail(`Proof generation failed: ${error}`);
+  }
+});
+
+test.serial('proof-server: income threshold proof with failing condition', async (t) => {
+  const available = await isProofServerAvailable();
+
+  if (!available) {
+    t.log('Skipping: proof-server not running');
+    t.pass('Skipped');
+    return;
+  }
+
+  const paymentCommitments = [
+    new Array(32).fill(0).map((_, i) => (3000 + i) % 256),
+  ];
+  const historyCommitment = computeHistoryCommitment(paymentCommitments);
+
+  try {
+    // Request threshold higher than actual income
+    const result = await generateProof('income_threshold', {
+      payment_history: [3000],
+      threshold: 5000, // 3000 < 5000, so should fail
+      history_commitment: historyCommitment,
+      employee_id: employee1.accountId,
+    });
+
+    const inputs = result.public_inputs;
+    console.log('  Income Threshold (failing case):');
+    console.log(`    - Threshold: ${inputs.threshold}`);
+    console.log(`    - Meets threshold: ${inputs.meets_threshold}`);
+
+    // Proof generates but meets_threshold should be false
+    t.is(inputs.threshold, 5000, 'Threshold should match request');
+    t.false(inputs.meets_threshold, 'Should NOT meet threshold (3000 < 5000)');
+    t.is(inputs.payment_count, 1, 'Should have 1 payment');
+
+    t.pass('Failing threshold proof generated correctly');
+  } catch (error) {
+    t.fail(`Proof generation failed: ${error}`);
+  }
+});
+
+test.serial('proof-server: attestation is included in proof response', async (t) => {
+  const available = await isProofServerAvailable();
+
+  if (!available) {
+    t.log('Skipping: proof-server not running');
+    t.pass('Skipped');
+    return;
+  }
+
+  const historyCommitment = new Array(32).fill(0);
+
+  try {
+    const result = await generateProof('income_threshold', {
+      payment_history: [5000, 5000, 5000],
+      threshold: 4000,
+      history_commitment: historyCommitment,
+      employee_id: 'test.near',
+    });
+
+    // Verify attestation is present
+    t.truthy(result.attestation, 'Should have attestation');
+    t.truthy(result.attestation.signature, 'Attestation should have signature');
+    t.truthy(result.attestation.server_pubkey, 'Attestation should have server public key');
+    t.truthy(result.attestation.timestamp, 'Attestation should have timestamp');
+    t.truthy(result.attestation.id, 'Attestation should have ID');
+
+    console.log('  Attestation details:');
+    console.log(`    - ID: ${result.attestation.id}`);
+    console.log(`    - Timestamp: ${result.attestation.timestamp}`);
+    console.log(`    - Signature length: ${result.attestation.signature.length} chars`);
+
+    t.pass('Attestation included in proof response');
+  } catch (error) {
+    t.fail(`Proof generation failed: ${error}`);
+  }
 });

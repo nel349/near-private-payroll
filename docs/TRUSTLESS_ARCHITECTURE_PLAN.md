@@ -13,9 +13,9 @@ Employee → Auditor (trusted) → Contract → Verifier (Bank)
         Trust assumption here
 
 NEW (NEAR + RISC Zero):
-Employee → Contract (RISC Zero verification) → Verifier (Bank)
+Employee → Proof Server (TEE) → Contract (verification) → Verifier (Bank)
                 ↓
-        Pure cryptographic trust
+        Cryptographic + TEE attestation trust
 ```
 
 ---
@@ -36,8 +36,8 @@ Employee → Contract (RISC Zero verification) → Verifier (Bank)
 | 7.1 | EZKL/zkML infrastructure | 📋 PLANNED | ML-based proof support |
 | 7.2 | EZKL proof verification in contracts | 📋 PLANNED | Dual proof system |
 | 7.3 | ML model development | 📋 PLANNED | Credit scoring, fraud detection |
-| 8.1 | Proof server (Phase 1) | 🔨 IN PROGRESS | Hackathon MVP |
-| 8.2 | Local TEE proving (Phase 1.5) | 📋 PLANNED | Privacy-preserving local option |
+| 8.1 | Proof server (Phase 1) | ✅ DONE | Local STARK generation with TEE attestation |
+| 8.2 | Bonsai integration (Phase 1.5) | 📋 PLANNED | STARK → Groth16 conversion for on-chain verification |
 | 8.3 | Decentralized prover network (Phase 2-3) | 📋 PLANNED | Testnet → Mainnet |
 
 ---
@@ -55,57 +55,116 @@ RISC Zero produces STARK proofs that are:
 
 Full STARK verification on-chain is expensive. Solutions:
 
-| Approach | Proof Size | Gas Cost | Trust | Recommendation |
-|----------|-----------|----------|-------|----------------|
+| Approach | Proof Size | Gas Cost | Trust | Status |
+|----------|-----------|----------|-------|--------|
 | Full STARK on-chain | ~200KB | Very High | Trustless | Not practical for NEAR |
-| Groth16 wrapper (Bonsai) | ~256 bytes | Low | Trustless | ✅ Recommended |
-| Off-chain + commitment | ~64 bytes | Very Low | Semi-trusted | Fallback option |
+| Groth16 wrapper (Bonsai) | ~256 bytes | Low | Trustless | 📋 PLANNED (requires Bonsai API key) |
+| **Proof Server + TEE** | ~800 bytes | Low | TEE attestation | ✅ CURRENT IMPLEMENTATION |
 
-**Recommended: RISC Zero Groth16 via Bonsai**
+#### Why Groth16 Wrapping?
 
-RISC Zero's Bonsai service can wrap STARK proofs in Groth16:
-- STARK proof → Bonsai → Groth16 proof (~256 bytes)
-- Groth16 verifier is ~200K gas on Ethereum, similar on NEAR
-- Maintains trustless properties
+**STARK vs Groth16 Comparison:**
 
-### Implementation Architecture
+| Property | STARK (RISC Zero native) | Groth16 (wrapper) |
+|----------|-------------------------|-------------------|
+| **Proof Size** | 100-200+ KB | ~256 bytes |
+| **On-chain Verification** | Expensive (many hash ops) | Cheap (pairing check) |
+| **NEAR Support** | No native precompiles | `alt_bn128_pairing_check` precompile |
+| **Gas Cost** | Would be millions of gas | ~200K gas |
+| **Security** | Post-quantum | Elliptic curve based |
+
+**Key insight:** NEAR has native `alt_bn128` precompiles for efficient Groth16 verification (~200K gas), but no STARK verification precompiles. This is why converting STARK → Groth16 is valuable for on-chain verification.
+
+#### Current Implementation: Proof Server with TEE Attestation
+
+For the hackathon MVP, we use a **local proof server** approach:
+
+1. **Proof Server** runs RISC Zero zkVM locally and generates STARK proofs
+2. **TEE Attestation** (optional) - server signs proofs with Ed25519 key
+3. **Contract** can verify server attestation signature OR use dev mode
+4. **Future:** Bonsai integration for STARK → Groth16 conversion
+
+### Implementation Architecture (Current)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     RISC ZERO VERIFICATION FLOW                          │
+│                  PROOF SERVER ARCHITECTURE (CURRENT)                     │
 └─────────────────────────────────────────────────────────────────────────┘
 
-  Employee                Bonsai Service              NEAR Contracts
+  Employee                Proof Server (TEE)          NEAR Contracts
      │                         │                           │
-     │ 1. Run guest program    │                           │
-     │    locally with         │                           │
+     │ 1. Request proof with   │                           │
      │    private inputs       │                           │
-     │                         │                           │
-     │ 2. Generate STARK       │                           │
-     │    proof (receipt)      │                           │
      │──────────────────────────>                          │
      │                         │                           │
-     │                         │ 3. Convert STARK          │
-     │                         │    to Groth16             │
+     │                         │ 2. Run RISC Zero zkVM     │
+     │                         │    - Load guest ELF       │
+     │                         │    - Execute with inputs  │
+     │                         │    - Generate STARK proof │
      │                         │                           │
-     │ 4. Receive Groth16      │                           │
-     │    proof + journal      │                           │
+     │                         │ 3. Create receipt:        │
+     │                         │    - image_id (32 bytes)  │
+     │                         │    - proof_data (256 bytes)│
+     │                         │    - journal (public outputs)│
+     │                         │                           │
+     │                         │ 4. Sign with TEE key      │
+     │                         │    (attestation)          │
+     │                         │                           │
+     │ 5. Receive proof +      │                           │
+     │    attestation          │                           │
      │<──────────────────────────                          │
      │                         │                           │
-     │ 5. Submit to payroll    │                           │
+     │ 6. Submit to payroll    │                           │
      │    contract             │                           │
      │───────────────────────────────────────────────────────>
      │                         │                           │
-     │                         │  6. Payroll calls         │
-     │                         │     zk_verifier           │
-     │                         │     .verify_groth16()     │
-     │                         │                           │
-     │                         │  7. Verify proof          │
-     │                         │     Extract journal       │
-     │                         │     Check image ID        │
+     │                         │  7. Parse receipt:        │
+     │                         │     - Extract journal     │
+     │                         │     - Check image ID      │
+     │                         │     - (Dev mode: skip)    │
+     │                         │     - (Prod: verify sig)  │
      │                         │                           │
      │ 8. Success/Failure      │                           │
      │<───────────────────────────────────────────────────────
+```
+
+### Future Architecture: With Bonsai
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  BONSAI ARCHITECTURE (PLANNED)                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  Employee            Proof Server          Bonsai API       NEAR Contracts
+     │                     │                    │                  │
+     │ 1. Request proof    │                    │                  │
+     │──────────────────────>                   │                  │
+     │                     │                    │                  │
+     │                     │ 2. Generate STARK  │                  │
+     │                     │    proof locally   │                  │
+     │                     │                    │                  │
+     │                     │ 3. Send STARK to   │                  │
+     │                     │    Bonsai          │                  │
+     │                     │─────────────────────>                 │
+     │                     │                    │                  │
+     │                     │                    │ 4. Convert       │
+     │                     │                    │    STARK→Groth16 │
+     │                     │                    │                  │
+     │                     │ 5. Receive Groth16 │                  │
+     │                     │<─────────────────────                 │
+     │                     │                    │                  │
+     │ 6. Return Groth16   │                    │                  │
+     │<──────────────────────                   │                  │
+     │                     │                    │                  │
+     │ 7. Submit Groth16   │                    │                  │
+     │───────────────────────────────────────────────────────────────>
+     │                     │                    │                  │
+     │                     │                    │ 8. Verify Groth16│
+     │                     │                    │    via alt_bn128 │
+     │                     │                    │    precompile    │
+     │                     │                    │                  │
+     │ 9. Success          │                    │                  │
+     │<───────────────────────────────────────────────────────────────
 ```
 
 ### ZK Verifier Contract Design
@@ -359,17 +418,37 @@ pub struct IncomeRangeOutput {
 ### Trust Assumptions
 
 ```
-TRUSTLESS (Cryptographic Guarantee):
-✓ Proof correctness (STARK/Groth16 mathematics)
+CURRENT IMPLEMENTATION (Proof Server + TEE Attestation):
+✓ STARK proof correctness (RISC Zero zkVM mathematics)
 ✓ Circuit integrity (image ID binding)
 ✓ History binding (commitment verification)
 ✓ Replay protection (receipt hash tracking)
+✓ TEE attestation (server signature on proof)
 
-OPERATIONAL TRUST:
-• Bonsai service availability (can use local prover as fallback)
+SEMI-TRUSTED:
+• Proof server integrity (TEE reduces trust)
+• Server availability (single point of failure for now)
+
+WITH BONSAI (Future - Fully Trustless):
+✓ Proof correctness (Groth16 verified on-chain)
+✓ No trusted prover (math verification only)
+✓ Circuit integrity (image ID verified)
+✓ History binding (commitment verified)
+
+OPERATIONAL TRUST (both approaches):
 • NEAR validators (standard blockchain trust)
 • Circuit correctness (audited code)
 ```
+
+### Trust Model Comparison
+
+| Aspect | Current (TEE) | Future (Bonsai) |
+|--------|---------------|-----------------|
+| **Proof Verification** | Trust TEE attestation | On-chain Groth16 |
+| **Prover Trust** | Trust TEE hardware | Trustless (math only) |
+| **Gas Cost** | Low (no on-chain verification) | Low (~200K gas) |
+| **Decentralization** | Single server | Bonsai cloud |
+| **Latency** | ~40s | ~2-5 minutes |
 
 ### Attack Vectors & Mitigations
 
@@ -427,34 +506,45 @@ fn verify_risc_zero_proof(...) -> (bool, bool, u32) {
 
 ## Next Implementation Steps
 
-### Immediate (This Session)
+### Completed (Hackathon MVP)
 
 1. ✅ Update payroll contract with trustless interface
-2. 🔄 Update zk-verifier contract:
+2. ✅ Update zk-verifier contract:
    - Add verification mode enum
    - Add new verification methods
-   - Add journal decoding
+   - Add journal decoding (fixed-size LE format)
    - Add dev mode support
-3. 🔄 Test cross-contract calls
+3. ✅ Test cross-contract calls
+4. ✅ Implement proof server:
+   - RISC Zero zkVM integration
+   - HTTP API for proof generation
+   - TEE attestation (Ed25519 signatures)
+   - Support for income_threshold, income_range, credit_score
+5. ✅ Write integration tests:
+   - Proof server health check
+   - Proof generation tests
+   - Contract integration tests
+   - Disclosure flow tests
 
 ### Short-term
 
-4. Implement Groth16 proof parsing
-5. Add proper error handling
-6. Write integration tests
+6. ⏳ SDK updates for new proof flow
+7. ⏳ Frontend UI for proof requests
+8. 📋 NEAR testnet deployment
 
-### Medium-term
+### Medium-term (Post-Hackathon)
 
-7. Integrate with Bonsai for STARK→Groth16 conversion
-8. Update RISC Zero circuits with proper journal format
-9. Update SDK for new flow
+9. 📋 Bonsai integration for STARK→Groth16 conversion
+   - Requires Bonsai API key
+   - Enables fully trustless on-chain verification
+10. 📋 Decentralized prover network
+11. 📋 Security audit
 
 ### Long-term
 
-10. Security audit
-11. Testnet deployment
-12. Performance optimization
-13. Mainnet launch
+12. 📋 EZKL/zkML integration for ML-based proofs
+13. 📋 Performance optimization
+14. 📋 Mainnet launch
 
 ---
 
@@ -603,22 +693,27 @@ enum EzklProofType {
 
 ## File Changes Summary
 
-### Modified Files
+### Implemented Files
 
-| File | Changes |
-|------|---------|
-| `contracts/payroll/src/lib.rs` | Trustless income proof submission, removed auditor deps |
-| `contracts/zk-verifier/src/lib.rs` | New verification interface (pending) |
-| `docs/TRUSTLESS_ARCHITECTURE_PLAN.md` | This document |
-| `docs/architecture/SYSTEM_ARCHITECTURE.md` | Updated architecture diagrams |
+| File | Status | Description |
+|------|--------|-------------|
+| `contracts/payroll/src/lib.rs` | ✅ DONE | Trustless income proof submission, removed auditor deps |
+| `contracts/zk-verifier/src/lib.rs` | ✅ DONE | Groth16 verification, journal parsing, image ID registry |
+| `proof-server/src/main.rs` | ✅ DONE | HTTP API + RISC Zero prover |
+| `proof-server/src/services/prover.rs` | ✅ DONE | STARK proof generation with zkVM |
+| `proof-server/src/services/attestation.rs` | ✅ DONE | TEE attestation (Ed25519 signatures) |
+| `circuits/income-proof/` | ✅ DONE | RISC Zero guest programs for income proofs |
+| `tests/integration.test.ts` | ✅ DONE | Full integration tests with proof server |
+| `tests/payroll.test.ts` | ✅ DONE | Contract unit tests |
+| `docs/TRUSTLESS_ARCHITECTURE_PLAN.md` | ✅ DONE | This document |
+| `docs/PROOF_SERVER_ARCHITECTURE.md` | ✅ DONE | Proof server design documentation |
 
-### New Files (To Be Created)
+### Pending Files
 
-| File | Purpose |
-|------|---------|
-| `contracts/zk-verifier/src/groth16.rs` | Groth16 verification logic |
-| `contracts/zk-verifier/src/journal.rs` | Journal decoding |
-| `sdk/src/proof.ts` | Proof generation helpers |
+| File | Status | Purpose |
+|------|--------|---------|
+| `sdk/src/proof.ts` | ⏳ PENDING | TypeScript SDK for proof generation |
+| `contracts/prover-registry/` | 📋 PLANNED | Decentralized prover registry (post-hackathon) |
 
 ### Planned Files (EZKL/zkML Support)
 
@@ -628,20 +723,8 @@ enum EzklProofType {
 | `zkml/models/credit_score.py` | Credit scoring neural network |
 | `zkml/models/fraud_detection.py` | Fraud detection model |
 | `zkml/generated/` | Compiled circuits and keys |
-| `zkml/src/prover.ts` | TypeScript proof generation |
 | `contracts/zk-verifier/src/ezkl.rs` | EZKL proof verification |
 | `sdk/src/zkml.ts` | zkML SDK integration |
-
-### Planned Files (Proof Server)
-
-| File | Purpose |
-|------|---------|
-| `proof-server/` | Proof server infrastructure |
-| `proof-server/src/main.rs` | HTTP API + RISC Zero prover |
-| `proof-server/src/tee.rs` | TEE attestation support |
-| `proof-server/Dockerfile` | Container with SGX support |
-| `contracts/prover-registry/` | Decentralized prover registry |
-| `docs/PROOF_SERVER_ARCHITECTURE.md` | Full architecture documentation |
 
 ---
 

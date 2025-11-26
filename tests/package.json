@@ -6,6 +6,7 @@
   "scripts": {
     "test": "ava",
     "test:watch": "ava --watch",
+    "typecheck": "tsc --noEmit",
     "build:contracts": "cd .. && cargo near build non-reproducible-wasm"
   },
   "keywords": [
