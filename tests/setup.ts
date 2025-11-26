@@ -16,6 +16,24 @@ const __dirname = path.dirname(__filename);
 const PAYROLL_WASM = path.join(__dirname, '../target/near/payroll_contract/payroll_contract.wasm');
 const ZK_VERIFIER_WASM = path.join(__dirname, '../target/near/zk_verifier/zk_verifier.wasm');
 const WZEC_TOKEN_WASM = path.join(__dirname, '../target/near/wzec_token/wzec_token.wasm');
+const INTENTS_ADAPTER_WASM = path.join(__dirname, '../target/near/intents_adapter/intents_adapter.wasm');
+
+// Alternative paths (wasm32-unknown-unknown target)
+const PAYROLL_WASM_ALT = path.join(__dirname, '../target/wasm32-unknown-unknown/release/payroll_contract.wasm');
+const ZK_VERIFIER_WASM_ALT = path.join(__dirname, '../target/wasm32-unknown-unknown/release/zk_verifier.wasm');
+const WZEC_TOKEN_WASM_ALT = path.join(__dirname, '../target/wasm32-unknown-unknown/release/wzec_token.wasm');
+const INTENTS_ADAPTER_WASM_ALT = path.join(__dirname, '../target/wasm32-unknown-unknown/release/intents_adapter.wasm');
+
+import fs from 'fs';
+
+/**
+ * Get the correct wasm path (tries both build targets)
+ */
+function getWasmPath(primary: string, alt: string): string {
+  if (fs.existsSync(primary)) return primary;
+  if (fs.existsSync(alt)) return alt;
+  throw new Error(`WASM file not found: ${primary} or ${alt}`);
+}
 
 /**
  * Test context with deployed contracts and accounts
@@ -28,6 +46,7 @@ export interface TestContext {
   payroll: NearAccount;
   zkVerifier: NearAccount;
   wzecToken: NearAccount;
+  intentsAdapter: NearAccount;
 
   // Accounts
   owner: NearAccount;
@@ -36,7 +55,40 @@ export interface TestContext {
   employee2: NearAccount;
   employee3: NearAccount;
   verifier: NearAccount; // e.g., bank, landlord
+  bridgeRelayer: NearAccount; // For cross-chain operations
 }
+
+/**
+ * Supported destination chains (matches contract)
+ */
+export enum DestinationChain {
+  Zcash = 'Zcash',
+  Solana = 'Solana',
+  Ethereum = 'Ethereum',
+  Bitcoin = 'Bitcoin',
+  Near = 'Near',
+}
+
+/**
+ * Mock Zcash addresses for testing
+ */
+export const MOCK_ZCASH_ADDRESSES = {
+  // Shielded addresses (recommended for privacy)
+  shielded1: 'zs1j29m7zdmh0s2k2c2fqjcpxlqm9uvr9q3r5xeqf1234567890abcdef1234567890abcdef12',
+  shielded2: 'zs1k38n8aeni1t3l3d3grjdylrn0wus9r4s6xfqg2345678901bcdef2345678901bcdef23',
+  // Transparent addresses (less private)
+  transparent1: 't1KstHrDrZiYTx8XQMcjPrFkBqCqS1Dz4bC',
+  transparent2: 't3Vz22vK5z8LcuQKvcreMJC1Mw8QbCNPZvn',
+};
+
+/**
+ * Mock addresses for other chains
+ */
+export const MOCK_ADDRESSES = {
+  solana: 'DYw8jCTfwHNRJhhmFcbXvVDTqWMEVFBX6ZKUmG5CNSKK',
+  ethereum: '0x742d35Cc6634C0532925a3b844Bc9e7595f8e123',
+  bitcoin: 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq',
+};
 
 /**
  * Initialize test environment with all contracts deployed
@@ -52,25 +104,54 @@ export async function initTestContext(): Promise<TestContext> {
   const employee2 = await root.createSubAccount('employee2', { initialBalance: BigInt(parseNEAR('10')) });
   const employee3 = await root.createSubAccount('employee3', { initialBalance: BigInt(parseNEAR('10')) });
   const verifier = await root.createSubAccount('verifier', { initialBalance: BigInt(parseNEAR('10')) });
+  const bridgeRelayer = await root.createSubAccount('relayer', { initialBalance: BigInt(parseNEAR('10')) });
 
-  // Deploy contracts
+  // Get wasm paths (tries both build targets)
+  const payrollWasm = getWasmPath(PAYROLL_WASM, PAYROLL_WASM_ALT);
+  const zkVerifierWasm = getWasmPath(ZK_VERIFIER_WASM, ZK_VERIFIER_WASM_ALT);
+  const wzecTokenWasm = getWasmPath(WZEC_TOKEN_WASM, WZEC_TOKEN_WASM_ALT);
+  const intentsAdapterWasm = getWasmPath(INTENTS_ADAPTER_WASM, INTENTS_ADAPTER_WASM_ALT);
+
+  // Deploy ZK Verifier
   const zkVerifier = await root.createSubAccount('zkverifier', { initialBalance: BigInt(parseNEAR('50')) });
-  await zkVerifier.deploy(ZK_VERIFIER_WASM);
+  await zkVerifier.deploy(zkVerifierWasm);
   await zkVerifier.call(zkVerifier, 'new', { owner: owner.accountId });
 
+  // Deploy wZEC Token
   const wzecToken = await root.createSubAccount('wzec', { initialBalance: BigInt(parseNEAR('50')) });
-  await wzecToken.deploy(WZEC_TOKEN_WASM);
+  await wzecToken.deploy(wzecTokenWasm);
   await wzecToken.call(wzecToken, 'new', {
     owner: owner.accountId,
     bridge_controller: owner.accountId, // For testing, owner is also bridge controller
   });
 
+  // Deploy Payroll Contract
   const payroll = await root.createSubAccount('payroll', { initialBalance: BigInt(parseNEAR('50')) });
-  await payroll.deploy(PAYROLL_WASM);
+  await payroll.deploy(payrollWasm);
   await payroll.call(payroll, 'new', {
     owner: owner.accountId,
     wzec_token: wzecToken.accountId,
     zk_verifier: zkVerifier.accountId,
+  });
+
+  // Deploy Intents Adapter
+  const intentsAdapter = await root.createSubAccount('intents', { initialBalance: BigInt(parseNEAR('50')) });
+  await intentsAdapter.deploy(intentsAdapterWasm);
+  await intentsAdapter.call(intentsAdapter, 'new', {
+    owner: owner.accountId,
+    payroll_contract: payroll.accountId,
+    wzec_token: wzecToken.accountId,
+    intents_contract: null, // Use default (intents.near) - mocked in tests
+  });
+
+  // Configure payroll to use intents adapter
+  await owner.call(payroll, 'set_intents_adapter', {
+    intents_adapter: intentsAdapter.accountId,
+  });
+
+  // Add bridge relayer as authorized
+  await owner.call(intentsAdapter, 'add_relayer', {
+    relayer: bridgeRelayer.accountId,
   });
 
   return {
@@ -79,12 +160,14 @@ export async function initTestContext(): Promise<TestContext> {
     payroll,
     zkVerifier,
     wzecToken,
+    intentsAdapter,
     owner,
     company,
     employee1,
     employee2,
     employee3,
     verifier,
+    bridgeRelayer,
   };
 }
 
