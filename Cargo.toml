@@ -7,6 +7,7 @@ members = [
     "circuits/payment-proof",
     "circuits/income-proof",
     "circuits/balance-proof",
+    "proof-server",
 ]
 
 [workspace.package]

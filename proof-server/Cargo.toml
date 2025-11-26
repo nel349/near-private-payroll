@@ -1,0 +1,61 @@
+[package]
+name = "proof-server"
+version = "0.1.0"
+edition = "2021"
+description = "ZK Proof Generation Server with TEE Support"
+license = "MIT"
+
+[[bin]]
+name = "proof-server"
+path = "src/main.rs"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# RISC Zero
+risc0-zkvm = "3.0.4"
+risc0-groth16 = "3.0.3"
+
+# Cryptography
+sha2 = "0.10"
+hex = "0.4"
+ed25519-dalek = { version = "2.1", features = ["serde"] }
+rand = "0.8"
+
+# Configuration
+dotenvy = "0.15"
+config = "0.14"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Utilities
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []
+# Enable TEE support (requires SGX SDK)
+tee = []
+# Development mode - skip actual proof generation
+dev-mode = []
