@@ -1,14 +1,18 @@
 /**
  * Integration Tests - Real Proof Generation with Proof Server
  *
- * These tests require the proof-server to be running:
- *   DEV_MODE=true cargo run -p proof-server
+ * These tests use REAL Groth16 proofs and verification:
+ *   1. Load real RISC Zero verification key from risc0_vk.json
+ *   2. Register real image IDs from circuit ELFs
+ *   3. Generate real Groth16 proofs via proof-server
+ *   4. Verify proofs on-chain using NEAR's alt_bn128 precompiles
  *
- * They test the full end-to-end flow:
- *   1. Generate proof via proof-server HTTP API
- *   2. Submit proof to payroll contract
- *   3. Contract verifies via zk-verifier
- *   4. Bank/landlord verifies via disclosure
+ * Requirements:
+ *   - Circuits built: ./scripts/build-circuits.sh
+ *   - Proof server running: cargo run -p proof-server (with or without DEV_MODE)
+ *
+ * DEV_MODE=false: Real Groth16 proofs (~2 min generation, verification should PASS)
+ * DEV_MODE=true: Mock proofs (instant, verification will FAIL but tests still useful)
  */
 
 import test from 'ava';
@@ -17,6 +21,8 @@ import type { NearAccount } from 'near-workspaces';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
+import { ensureProofServerRunning } from './setup.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +31,42 @@ const PROOF_SERVER_URL = process.env.PROOF_SERVER_URL || 'http://localhost:3000'
 
 // Helper to parse NEAR amount to bigint
 const parseNEARAmount = (amount: string): bigint => BigInt(parseNEAR(amount));
+
+// Load real RISC Zero verification key
+// NOTE: Contract expects hex strings (has custom deserializer), not byte arrays!
+function loadVerificationKey() {
+  const vkPath = path.join(__dirname, '..', 'scripts', 'risc0_vk.json');
+  const vkJson = readFileSync(vkPath, 'utf-8');
+  const vk = JSON.parse(vkJson);
+
+  // Return as-is - contract has custom hex_serde deserializer
+  return vk;
+}
+
+// Load circuit image IDs
+// Note: These are computed from circuit ELFs via compute_image_id()
+// Run: cargo test -p proof-server --test compute_image_ids -- --nocapture
+// to regenerate if circuits change
+function getImageIds() {
+  // Try to load from a JSON file if it exists, otherwise use fallback
+  const imageIdsPath = path.join(__dirname, '..', 'scripts', 'image_ids.json');
+
+  try {
+    const imageIdsJson = readFileSync(imageIdsPath, 'utf-8');
+    const imageIds = JSON.parse(imageIdsJson);
+    return imageIds;
+  } catch {
+    // Fallback: These are placeholders - replace with actual image IDs
+    console.warn('Warning: Using placeholder image IDs. Run compute_image_ids test to get real values.');
+    return {
+      income_threshold: Array.from({ length: 32 }, (_, i) => i % 256),
+      income_range: Array.from({ length: 32 }, (_, i) => (i + 1) % 256),
+      credit_score: Array.from({ length: 32 }, (_, i) => (i + 2) % 256),
+      payment: Array.from({ length: 32 }, (_, i) => (i + 3) % 256),
+      balance: Array.from({ length: 32 }, (_, i) => (i + 4) % 256),
+    };
+  }
+}
 
 // Shared test state (module-level, like payroll.test.ts)
 let worker: Worker;
@@ -41,6 +83,17 @@ async function isProofServerAvailable(): Promise<boolean> {
   try {
     const response = await fetch(`${PROOF_SERVER_URL}/health`);
     return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Check if proof-server is in DEV_MODE
+async function isDevMode(): Promise<boolean> {
+  try {
+    const response = await fetch(`${PROOF_SERVER_URL}/status`);
+    const status = await response.json();
+    return status.dev_mode === true;
   } catch {
     return false;
   }
@@ -105,15 +158,13 @@ function computeHistoryCommitment(commitments: number[][]): number[] {
 }
 
 test.before(async () => {
-  // Check if proof-server is running
-  const serverAvailable = await isProofServerAvailable();
-  if (!serverAvailable) {
-    console.log('\n========================================');
-    console.log('  PROOF SERVER NOT RUNNING');
-    console.log('  Start with: DEV_MODE=true cargo run -p proof-server');
-    console.log('========================================\n');
-    // Don't fail - tests will skip if server unavailable
-  }
+  // Auto-start proof-server if not running
+  await ensureProofServerRunning();
+  const devMode = await isDevMode();
+
+  console.log('\n========================================');
+  console.log(`  Proof Server: ${devMode ? 'DEV_MODE (mock proofs)' : 'PRODUCTION (real Groth16)'}`);
+  console.log('========================================\n');
 
   worker = await Worker.init();
   root = worker.rootAccount;
@@ -179,52 +230,60 @@ test.after.always(async () => {
 
 // ==================== SETUP ====================
 
-test.serial('setup: register image IDs and verification keys', async (t) => {
+test.serial('setup: register REAL verification key and image IDs', async (t) => {
+  console.log('  Loading real RISC Zero verification key...');
 
-  // Register image ID for IncomeThreshold (matches proof-server)
-  // Proof-server uses [0x01; 32] for income_threshold
-  const incomeThresholdImageId = new Array(32).fill(0x01);
+  // Load real verification key from risc0_vk.json
+  const verificationKey = loadVerificationKey();
+  console.log('  ✓ Loaded VK from scripts/risc0_vk.json');
 
-  await owner.call(zkVerifier, 'register_image_id', {
-    proof_type: 'IncomeThreshold',
-    image_id: incomeThresholdImageId,
-  });
+  // Register VK for all proof types (universal VK)
+  const proofTypes = ['IncomeThreshold', 'IncomeRange', 'CreditScore', 'PaymentProof', 'BalanceProof'];
 
-  // Register verification key (using test vectors)
-  // Note: These need to be valid BN254 points for real verification
-  const g1GenX = new Array(32).fill(0);
-  g1GenX[31] = 1;
-  const g1GenY = new Array(32).fill(0);
-  g1GenY[31] = 2;
+  for (const proofType of proofTypes) {
+    await owner.call(
+      zkVerifier,
+      'register_verification_key',
+      {
+        proof_type: proofType,
+        vk: verificationKey,
+      },
+      { gas: 300000000000000n }
+    );
+    console.log(`  ✓ Registered VK for ${proofType}`);
+  }
 
-  const g2Point = {
-    x_c0: g1GenX,
-    x_c1: g1GenX,
-    y_c0: g1GenY,
-    y_c1: g1GenY,
-  };
+  // Load and register image IDs
+  console.log('\n  Loading circuit image IDs...');
+  const imageIds = getImageIds();
 
-  const verificationKey = {
-    alpha_g1: { x: g1GenX, y: g1GenY },
-    beta_g2: g2Point,
-    gamma_g2: g2Point,
-    delta_g2: g2Point,
-    ic: [
-      { x: g1GenX, y: g1GenY },
-      { x: g1GenX, y: g1GenY },
-    ],
-  };
+  // Register image IDs
+  const imageIdMappings = [
+    { proof_type: 'IncomeThreshold', image_id: imageIds.income_threshold },
+    { proof_type: 'IncomeRange', image_id: imageIds.income_range },
+    { proof_type: 'CreditScore', image_id: imageIds.credit_score },
+    { proof_type: 'PaymentProof', image_id: imageIds.payment },
+    { proof_type: 'BalanceProof', image_id: imageIds.balance },
+  ];
 
-  await owner.call(zkVerifier, 'register_verification_key', {
-    proof_type: 'IncomeThreshold',
-    vk: verificationKey,
-  });
+  for (const { proof_type, image_id } of imageIdMappings) {
+    await owner.call(
+      zkVerifier,
+      'register_image_id',
+      {
+        proof_type,
+        image_id,
+      },
+      { gas: 300000000000000n }
+    );
+    console.log(`  ✓ Registered image ID for ${proof_type}`);
+  }
 
-  t.pass('Image IDs and verification keys registered');
+  console.log('\n  ✓ All verification keys and image IDs registered');
+  t.pass('Real VK and image IDs registered');
 });
 
 test.serial('setup: add employee with payments', async (t) => {
-
   // Add employee
   await owner.call(payroll, 'add_employee', {
     employee_id: employee1.accountId,
@@ -266,7 +325,7 @@ test.serial('proof-server: health check', async (t) => {
 
   if (!available) {
     t.log('Skipping: proof-server not running');
-    t.pass('Skipped - start proof-server with: DEV_MODE=true cargo run -p proof-server');
+    t.pass('Skipped - start proof-server with: cargo run -p proof-server');
     return;
   }
 
@@ -328,7 +387,7 @@ test.serial('proof-server: generate income threshold proof', async (t) => {
   }
 });
 
-test.serial('integration: full income proof flow with proof-server', async (t) => {
+test.serial('integration: full income proof flow with REAL verification', async (t) => {
   const available = await isProofServerAvailable();
 
   if (!available) {
@@ -336,6 +395,8 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
     t.pass('Skipped');
     return;
   }
+
+  const devMode = await isDevMode();
 
   // Step 1: Get payment commitments from contract
   const paymentCount: number = await payroll.view('get_payment_count', {
@@ -353,6 +414,7 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
 
   // Step 2: Generate proof via proof-server
   console.log('  Generating proof via proof-server...');
+  console.log(`  Mode: ${devMode ? 'DEV_MODE (mock proofs)' : 'PRODUCTION (real Groth16)'}`);
 
   let proofResult;
   try {
@@ -362,7 +424,7 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
       history_commitment: historyCommitment,
       employee_id: employee1.accountId,
     });
-    console.log(`  Proof generated (${proofResult.proof.length} bytes, ${proofResult.generation_time_ms}ms)`);
+    console.log(`  ✓ Proof generated (${proofResult.proof.length} bytes, ${proofResult.generation_time_ms}ms)`);
   } catch (error) {
     t.fail(`Failed to generate proof: ${error}`);
     return;
@@ -371,10 +433,9 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
   // Step 3: Submit proof to payroll contract
   console.log('  Submitting proof to contract...');
 
-  // The proof from proof-server is: image_id (32) + proof_data (256) + journal
-  // We need to pass it in the format the contract expects
   const receipt = proofResult.proof;
 
+  let proofVerified = false;
   try {
     await employee1.call(
       payroll,
@@ -390,20 +451,31 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
       },
       { gas: 300000000000000n }
     );
-    console.log('  Proof submitted successfully');
-  } catch (error) {
-    // Expected: alt_bn128 verification will fail with mock proof data
-    console.log('  Proof submission completed (verification failed as expected with mock data)');
+    console.log('  ✓ Proof submitted and verified successfully');
+    proofVerified = true;
+  } catch (error: any) {
+    if (devMode) {
+      console.log('  ⚠ Proof verification failed (expected with DEV_MODE)');
+      console.log(`    Error: ${error.message}`);
+    } else {
+      console.log('  ✗ Proof verification FAILED (unexpected with real Groth16)');
+      t.fail(`Proof verification should succeed with real Groth16: ${error.message}`);
+      return;
+    }
   }
 
-  // Step 4: Check ZK verifier stats
-  const stats: any = await zkVerifier.view('get_stats', {});
-  console.log(`  ZK Verifier stats: ${stats[0]} total, ${stats[1]} successful`);
+  // Step 4: Check if proof was stored (only if verification passed)
+  if (proofVerified) {
+    const storedProof = await payroll.view('get_employee_income_proof', {
+      employee_id: employee1.accountId,
+      proof_type: 'AboveThreshold',
+    });
 
-  // With dev mode proofs, the alt_bn128 verification will fail
-  // This is expected behavior - real Groth16 proofs from Bonsai are needed
+    t.truthy(storedProof, 'Proof should be stored after successful verification');
+    console.log('  ✓ Verified proof stored on-chain');
+  }
 
-  // Step 5: Test disclosure flow (works regardless of proof verification)
+  // Step 5: Test disclosure flow
   console.log('  Testing disclosure flow...');
 
   await employee1.call(payroll, 'grant_disclosure', {
@@ -411,7 +483,7 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
     disclosure_type: { IncomeAboveThreshold: { threshold: '5000' } },
     duration_days: 30,
   });
-  console.log('  Disclosure granted to bank');
+  console.log('  ✓ Disclosure granted to bank');
 
   const meetsRequirement: boolean = await bank.call(
     payroll,
@@ -425,20 +497,31 @@ test.serial('integration: full income proof flow with proof-server', async (t) =
 
   console.log(`  Bank verification result: ${meetsRequirement}`);
 
-  // Result is false because proof verification failed (mock data)
-  // With real Bonsai proofs, this would return true
-  t.false(meetsRequirement, 'Expected false with mock proof data');
+  if (devMode) {
+    // With DEV_MODE, verification fails so proof isn't stored
+    t.false(meetsRequirement, 'Expected false with DEV_MODE (proof not verified)');
+  } else {
+    // With real Groth16, verification should pass
+    t.true(meetsRequirement, 'Expected true with real Groth16 proofs');
+  }
 
   console.log('\n  ==========================================');
   console.log('  INTEGRATION TEST SUMMARY:');
-  console.log('  1. Proof-server generated proof successfully');
-  console.log('  2. Contract received and processed proof');
-  console.log('  3. Groth16 verification failed (expected with mock data)');
-  console.log('  4. Disclosure flow works correctly');
-  console.log('  ');
-  console.log('  To enable full verification:');
-  console.log('  - Set USE_BONSAI=true and BONSAI_API_KEY=xxx');
-  console.log('  - Bonsai converts STARK proofs to Groth16');
+  console.log(`  1. Proof-server mode: ${devMode ? 'DEV_MODE' : 'PRODUCTION'}`);
+  console.log('  2. Proof generated successfully');
+  console.log('  3. Contract received and processed proof');
+  if (devMode) {
+    console.log('  4. Groth16 verification FAILED (expected with DEV_MODE)');
+    console.log('  5. Disclosure flow works correctly');
+    console.log('  ');
+    console.log('  To test REAL verification:');
+    console.log('  - Restart proof-server WITHOUT DEV_MODE=true');
+    console.log('  - Real Groth16 proofs take ~2 minutes to generate');
+  } else {
+    console.log('  4. Groth16 verification PASSED ✓');
+    console.log('  5. Proof stored on-chain ✓');
+    console.log('  6. Bank verification successful ✓');
+  }
   console.log('  ==========================================\n');
 
   t.pass('Integration flow completed');
@@ -576,43 +659,6 @@ test.serial('proof-server: income threshold proof with failing condition', async
     t.is(inputs.payment_count, 1, 'Should have 1 payment');
 
     t.pass('Failing threshold proof generated correctly');
-  } catch (error) {
-    t.fail(`Proof generation failed: ${error}`);
-  }
-});
-
-test.serial('proof-server: attestation is included in proof response', async (t) => {
-  const available = await isProofServerAvailable();
-
-  if (!available) {
-    t.log('Skipping: proof-server not running');
-    t.pass('Skipped');
-    return;
-  }
-
-  const historyCommitment = new Array(32).fill(0);
-
-  try {
-    const result = await generateProof('income_threshold', {
-      payment_history: [5000, 5000, 5000],
-      threshold: 4000,
-      history_commitment: historyCommitment,
-      employee_id: 'test.near',
-    });
-
-    // Verify attestation is present
-    t.truthy(result.attestation, 'Should have attestation');
-    t.truthy(result.attestation.signature, 'Attestation should have signature');
-    t.truthy(result.attestation.server_pubkey, 'Attestation should have server public key');
-    t.truthy(result.attestation.timestamp, 'Attestation should have timestamp');
-    t.truthy(result.attestation.id, 'Attestation should have ID');
-
-    console.log('  Attestation details:');
-    console.log(`    - ID: ${result.attestation.id}`);
-    console.log(`    - Timestamp: ${result.attestation.timestamp}`);
-    console.log(`    - Signature length: ${result.attestation.signature.length} chars`);
-
-    t.pass('Attestation included in proof response');
   } catch (error) {
     t.fail(`Proof generation failed: ${error}`);
   }

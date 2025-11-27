@@ -8,11 +8,14 @@ NEAR Private Payroll enables companies to run payroll while keeping salary amoun
 
 ### Key Features
 
-- **Private Salary Payments** - Amounts hidden via Pedersen commitments
-- **Zcash Integration** - Use ZEC for private value transfer via wZEC bridge
-- **ZK Income Proofs** - Prove income properties without revealing amounts
-- **Selective Disclosure** - Grant time-limited access to specific verifiers
-- **RISC Zero Proofs** - Efficient STARK-based proof verification on NEAR
+- **Privacy-Preserving Income Verification** - Prove income properties (e.g., "I earn ≥ $X") without revealing exact amounts using ZK proofs
+- **Salary Commitments** - Amounts hidden via Pedersen commitments (cryptographically binding but not revealing)
+- **Encrypted Payment History** - Only employees can decrypt their payment details
+- **Selective Disclosure** - Grant time-limited access to specific verifiers (banks, landlords)
+- **Trustless Verification** - RISC Zero Groth16 proofs verified on-chain, no trusted auditor needed
+- **Zcash Bridge Integration** - Private deposits/withdrawals via Zcash shielded pool (off NEAR)
+
+**Note:** wZEC token transfers on NEAR are transparent (standard NEP-141). For transaction privacy, bridge to Zcash.
 
 ## Architecture
 
@@ -159,18 +162,41 @@ await payroll.payEmployee(
 
 ## Privacy Model
 
+**See [docs/PRIVACY_ANALYSIS.md](docs/PRIVACY_ANALYSIS.md) for comprehensive analysis.**
+
 ### What's Private
 
-- **Salary amounts** - Hidden via Pedersen commitments
-- **Payment amounts** - Encrypted, only employee can decrypt
-- **Zcash transfers** - Fully shielded transactions
+- **Salary amounts** - Hidden via Pedersen commitments (cryptographically binding)
+- **Payment history amounts** - Encrypted, only employee can decrypt
+- **Employee personal data** - Names and details encrypted
+- **ZK proof internals** - Private inputs never exposed, only results
+- **Zcash bridge transactions** - Fully shielded on Zcash blockchain
 
-### What's Public
+### What's Public (On NEAR)
 
 - **Employee accounts** - NEAR account IDs visible
-- **Payment count** - Number of payments (not amounts)
+- **Employee balances** - Withdrawable balances queryable by anyone (`get_balance()`)
+- **wZEC token balances** - Standard NEP-141, fully transparent on NEAR
+- **wZEC transfers** - All token movements visible on-chain
+- **Payment count** - Number of payments received (not amounts)
 - **Employment status** - Active/OnLeave/Terminated
-- **Proof results** - "Income >= $X" (true/false)
+- **Proof results** - "Income >= $X" (true/false, to authorized verifiers only)
+
+### Privacy Guarantees
+
+This system excels at **privacy-preserving income verification**:
+- ✅ Employees can prove income properties without revealing exact amounts
+- ✅ Salary commitments hide amounts cryptographically
+- ✅ Encrypted payment history (only employee can decrypt)
+- ✅ ZK proofs are trustless (verified on-chain via RISC Zero)
+- ✅ Zcash bridge provides transaction privacy on Zcash side
+
+**However**, it does NOT provide:
+- ❌ Transaction-level privacy on NEAR (wZEC transfers are public like any NEP-141 token)
+- ❌ Balance privacy on NEAR (balances are publicly queryable)
+- ❌ Anonymous employees (NEAR account IDs are visible)
+
+**Privacy Model**: "Privacy through commitments and proofs, not through transaction shielding on NEAR"
 
 ## Income Proof Types
 

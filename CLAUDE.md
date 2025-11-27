@@ -85,36 +85,51 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 
 ## Current Status
 
-**Contracts**: ✅ Initial implementation
-- Payroll: Employee management, payments, disclosures
-- wZEC: NEP-141 with bridge operations
-- Verifier: Proof type handling (dev mode verification)
+**Contracts**: ✅ Fully implemented
+- Payroll: Employee management, payments, disclosures, trustless income proofs
+- wZEC: NEP-141 with bridge operations (transparent on NEAR, private on Zcash)
+- Verifier: Groth16 proof verification with NEAR alt_bn128 precompiles
 
-**Circuits**: ✅ Initial implementation
-- Payment proof
-- Income proof (4 types)
+**Circuits**: ✅ Fully implemented
+- Payment proof (RISC Zero)
+- Income proof (4 types: Threshold, Range, Average, Credit)
 - Balance proof
+- All circuits generate Groth16 proofs locally (no Bonsai needed)
+
+**Proof Server**: ✅ Fully implemented
+- Local STARK + Groth16 proof generation
+- REST API for proof generation
+- Verification key and image ID registration tools
 
 **SDK**: ✅ Initial implementation
 - TypeScript interfaces for all contracts
 - Crypto utilities (commitments)
 
+**Testing**: ✅ Local sandbox integration tests
+- NEAR Workspaces integration tests
+- VK registration tests
+- Image ID registration tests
+
 ## TODO
 
 ### Critical
-- [ ] Implement real RISC Zero verification (requires risc0-zkvm)
-- [ ] Implement proper encryption (NaCl/ECIES)
-- [ ] Bridge relayer service
+- [x] Implement real RISC Zero verification ✅ DONE (Groth16 on-chain)
+- [ ] Implement proper encryption (NaCl/ECIES) - Currently using placeholders
+- [ ] Bridge relayer service - For wZEC ↔ Zcash
 
 ### Short-term
 - [ ] NEAR testnet deployment
-- [ ] Integration tests
+- [x] Integration tests ✅ DONE (NEAR Workspaces sandbox)
 - [ ] Frontend UI
+- [ ] Privacy improvements (see docs/PRIVACY_ANALYSIS.md)
+  - [ ] Private balance tracking (use commitments)
+  - [ ] Shielded wZEC variant (private NEP-141)
 
 ### Long-term
 - [ ] Security audit
 - [ ] Mainnet deployment
 - [ ] Documentation site
+- [ ] Layer 2 privacy solution (rollup with private state)
 
 ## Common Issues
 
@@ -128,8 +143,23 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 - Journal commits are public outputs
 - Image ID is hash of circuit
 
+## Privacy Analysis
+
+**See `docs/PRIVACY_ANALYSIS.md` for comprehensive privacy analysis.**
+
+**Key Findings:**
+- ✅ Salary commitments hide amounts (cryptographically binding)
+- ✅ ZK proofs enable trustless income verification
+- ✅ Zcash bridge provides transaction privacy (on Zcash side)
+- ❌ wZEC balances and transfers are PUBLIC on NEAR (standard NEP-141)
+- ❌ Employee balances are publicly queryable
+
+**Core Value Proposition:** Privacy-preserving income verification, NOT transaction-level privacy on NEAR.
+
 ## Reference
 
 - NEAR SDK Docs: https://docs.near.org/sdk/rust
 - RISC Zero Docs: https://dev.risczero.com/api
 - NEP-141 Standard: https://nomicon.io/Standards/Tokens/FungibleToken
+- NEAR Workspaces: https://github.com/near/workspaces-rs
+- Privacy Analysis: `docs/PRIVACY_ANALYSIS.md`

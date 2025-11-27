@@ -224,20 +224,20 @@ export function createCreditScoreJournal(
 
 // ==================== PROOF TYPES ====================
 
-export enum IncomeProofType {
-  AboveThreshold = 'AboveThreshold',
-  InRange = 'InRange',
-  AverageAboveThreshold = 'AverageAboveThreshold',
-  CreditScore = 'CreditScore',
-}
+export const IncomeProofType = {
+  AboveThreshold: 'AboveThreshold',
+  InRange: 'InRange',
+  AverageAboveThreshold: 'AverageAboveThreshold',
+  CreditScore: 'CreditScore',
+} as const;
 
-export enum DisclosureType {
-  Employment = 'Employment',
-  IncomeThreshold = 'IncomeThreshold',
-  IncomeRange = 'IncomeRange',
-  PaymentHistory = 'PaymentHistory',
-  FullAudit = 'FullAudit',
-}
+export const DisclosureType = {
+  Employment: 'Employment',
+  IncomeThreshold: 'IncomeThreshold',
+  IncomeRange: 'IncomeRange',
+  PaymentHistory: 'PaymentHistory',
+  FullAudit: 'FullAudit',
+} as const;
 
 // ==================== IMAGE IDS ====================
 
@@ -249,3 +249,54 @@ export const MOCK_IMAGE_IDS = {
   CreditScore: new Array(32).fill(4),
   PaymentProof: new Array(32).fill(5),
 };
+
+// ==================== PROOF SERVER MANAGEMENT ====================
+
+const PROOF_SERVER_URL = 'http://localhost:3000';
+const PROOF_SERVER_BINARY = path.join(__dirname, '../target/release/proof-server');
+
+/**
+ * Check if proof server is running
+ */
+export async function isProofServerRunning(): Promise<boolean> {
+  try {
+    const response = await fetch(`${PROOF_SERVER_URL}/health`, {
+      signal: AbortSignal.timeout(1000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Start proof server if not already running
+ * Returns true if started, false if already running
+ */
+export async function ensureProofServerRunning(): Promise<boolean> {
+  if (await isProofServerRunning()) {
+    return false; // Already running
+  }
+
+  console.log('Starting proof-server...');
+
+  // Start proof server in background
+  const { spawn } = await import('child_process');
+  const proofServer = spawn(PROOF_SERVER_BINARY, [], {
+    detached: true,
+    stdio: 'ignore',
+  });
+
+  proofServer.unref(); // Allow parent to exit independently
+
+  // Wait for proof server to be ready (up to 10 seconds)
+  for (let i = 0; i < 20; i++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (await isProofServerRunning()) {
+      console.log('✓ Proof server started successfully');
+      return true;
+    }
+  }
+
+  throw new Error('Proof server failed to start within 10 seconds');
+}

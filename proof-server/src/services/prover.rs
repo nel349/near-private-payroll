@@ -175,12 +175,47 @@ pub struct ProverConfig {
     pub elf_dir: PathBuf,
 }
 
+impl ProverConfig {
+    /// Find the workspace root by walking up the directory tree
+    fn find_workspace_root() -> Option<PathBuf> {
+        let mut current = std::env::current_dir().ok()?;
+
+        loop {
+            let cargo_toml = current.join("Cargo.toml");
+            if cargo_toml.exists() {
+                // Check if this is the workspace root by looking for proof-server directory
+                let proof_server_dir = current.join("proof-server");
+                if proof_server_dir.exists() {
+                    return Some(current);
+                }
+            }
+
+            // Move up one directory
+            if !current.pop() {
+                break;
+            }
+        }
+
+        None
+    }
+
+    /// Get the ELF directory path, automatically detecting workspace root
+    fn find_workspace_elf_dir() -> PathBuf {
+        if let Some(workspace_root) = Self::find_workspace_root() {
+            workspace_root.join("target/riscv32im-risc0-zkvm-elf/docker")
+        } else {
+            // Fallback to relative path if workspace root not found
+            PathBuf::from("target/riscv32im-risc0-zkvm-elf/docker")
+        }
+    }
+}
+
 impl Default for ProverConfig {
     fn default() -> Self {
         // Default ELF directory relative to project root
         let elf_dir = std::env::var("ELF_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("target/riscv32im-risc0-zkvm-elf/docker"));
+            .unwrap_or_else(|_| ProverConfig::find_workspace_elf_dir());
 
         Self {
             use_bonsai: false,
@@ -213,7 +248,7 @@ impl ProverService {
         let dev_mode = std::env::var("DEV_MODE").unwrap_or_default() == "true";
         let elf_dir = std::env::var("ELF_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("target/riscv32im-risc0-zkvm-elf/docker"));
+            .unwrap_or_else(|_| ProverConfig::find_workspace_elf_dir());
 
         Self::new(ProverConfig {
             use_bonsai,
@@ -443,46 +478,54 @@ impl ProverService {
 
         // Get the prover and generate proof
         let prover = default_prover();
-        info!("Starting proof generation (this may take a while)...");
+        info!("Starting STARK proof generation...");
 
+        // Generate succinct STARK proof first
         let prove_info = prover
             .prove_with_ctx(
                 env,
                 &VerifierContext::default(),
                 &elf,
-                &ProverOpts::groth16(),
+                &ProverOpts::succinct(),
             )
             .map_err(|e| ProverError::GenerationFailed(format!("Prover error: {}", e)))?;
 
         let receipt = prove_info.receipt;
         info!(
-            "Proof generated successfully, journal size: {} bytes",
+            "STARK proof generated successfully, journal size: {} bytes",
             receipt.journal.bytes.len()
         );
 
         // Get image ID from receipt
         let image_id = self.get_image_id(proof_type);
 
-        // Extract Groth16 seal from receipt for on-chain verification
-        // The receipt contains the Groth16 proof (A, B, C points) in the seal
-        let groth16_receipt = receipt.inner.groth16().map_err(|e| {
-            ProverError::GenerationFailed(format!("Receipt is not Groth16 format: {}", e))
+        // Extract the succinct receipt
+        let succinct_receipt = receipt.inner.succinct().map_err(|e| {
+            ProverError::GenerationFailed(format!("Receipt is not succinct format: {}", e))
         })?;
 
-        // Deserialize the seal bytes to get the Groth16Seal structure
-        let seal: risc0_groth16::Seal = bincode::deserialize(&groth16_receipt.seal)
-            .map_err(|e| ProverError::SerializationError(format!("Failed to deserialize Groth16 seal: {}", e)))?;
+        // Convert to identity_p254 format (required for Groth16)
+        info!("Converting to identity_p254 format...");
+        let identity_receipt = risc0_zkvm::recursion::identity_p254(succinct_receipt)
+            .map_err(|e| ProverError::GenerationFailed(format!("identity_p254 conversion failed: {}", e)))?;
 
-        // Convert seal to fixed 256-byte format for NEAR contract
-        // Format: A (G1: 64 bytes) || B (G2: 128 bytes) || C (G1: 64 bytes)
-        let seal_bytes = Self::convert_seal_to_fixed_format(&seal)?;
+        // Get seal bytes in the correct format
+        info!("Converting STARK proof to Groth16 via shrink_wrap (this takes ~2 minutes)...");
+        let seal_bytes = identity_receipt.get_seal_bytes();
+
+        // Call shrink_wrap to convert to Groth16
+        let groth16_seal = risc0_groth16::prove::shrink_wrap(&seal_bytes)
+            .map_err(|e| ProverError::GenerationFailed(format!("Groth16 conversion failed: {}", e)))?;
+
+        // Convert Groth16 seal to fixed 256-byte format
+        let seal_bytes = Self::convert_seal_to_fixed_format(&groth16_seal)?;
 
         info!(
-            "Groth16 seal extracted: {} bytes (image_id: {}, journal: {}, seal: {})",
-            seal_bytes.len() + image_id.len() + receipt.journal.bytes.len(),
+            "Groth16 proof generated: {} bytes (image_id: {}, seal: {}, journal: {})",
+            image_id.len() + seal_bytes.len() + receipt.journal.bytes.len(),
             image_id.len(),
-            receipt.journal.bytes.len(),
-            seal_bytes.len()
+            seal_bytes.len(),
+            receipt.journal.bytes.len()
         );
 
         // Package: image_id (32) + seal (256 bytes fixed) + journal (public outputs)
