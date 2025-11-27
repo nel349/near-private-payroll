@@ -9,6 +9,7 @@ use crate::types::{
     ProofResult, ProofType,
 };
 use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, VerifierContext};
+use risc0_groth16;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -235,6 +236,77 @@ impl ProverService {
         }
     }
 
+    /// Convert RISC Zero Groth16 seal to fixed 256-byte format for NEAR contract
+    ///
+    /// RISC Zero seal format: nested Vec structures for G1 and G2 points
+    /// NEAR contract format: fixed 256 bytes = A (64) || B (128) || C (64)
+    ///
+    /// G1 point: x (32 bytes) || y (32 bytes) = 64 bytes
+    /// G2 point: x_c0 (32) || x_c1 (32) || y_c0 (32) || y_c1 (32) = 128 bytes
+    fn convert_seal_to_fixed_format(seal: &risc0_groth16::Seal) -> Result<Vec<u8>, ProverError> {
+        let mut result = Vec::with_capacity(256);
+
+        // Helper to convert Vec<u8> to fixed array and extend result
+        let mut extend_bytes = |vec: &Vec<u8>, expected_len: usize| -> Result<(), ProverError> {
+            if vec.len() != expected_len {
+                return Err(ProverError::SerializationError(format!(
+                    "Expected {} bytes, got {}",
+                    expected_len,
+                    vec.len()
+                )));
+            }
+            result.extend_from_slice(vec);
+            Ok(())
+        };
+
+        // Point A (G1): [x, y]
+        if seal.a.len() != 2 {
+            return Err(ProverError::SerializationError(format!(
+                "Invalid G1 point A: expected 2 coordinates, got {}",
+                seal.a.len()
+            )));
+        }
+        extend_bytes(&seal.a[0], 32)?; // A.x
+        extend_bytes(&seal.a[1], 32)?; // A.y
+
+        // Point B (G2): [[x_c0, x_c1], [y_c0, y_c1]]
+        if seal.b.len() != 2 {
+            return Err(ProverError::SerializationError(format!(
+                "Invalid G2 point B: expected 2 Fp2 elements, got {}",
+                seal.b.len()
+            )));
+        }
+        if seal.b[0].len() != 2 || seal.b[1].len() != 2 {
+            return Err(ProverError::SerializationError(
+                "Invalid G2 point B: Fp2 elements must have 2 components each".to_string(),
+            ));
+        }
+        extend_bytes(&seal.b[0][0], 32)?; // B.x_c0
+        extend_bytes(&seal.b[0][1], 32)?; // B.x_c1
+        extend_bytes(&seal.b[1][0], 32)?; // B.y_c0
+        extend_bytes(&seal.b[1][1], 32)?; // B.y_c1
+
+        // Point C (G1): [x, y]
+        if seal.c.len() != 2 {
+            return Err(ProverError::SerializationError(format!(
+                "Invalid G1 point C: expected 2 coordinates, got {}",
+                seal.c.len()
+            )));
+        }
+        extend_bytes(&seal.c[0], 32)?; // C.x
+        extend_bytes(&seal.c[1], 32)?; // C.y
+
+        // Verify total length
+        if result.len() != 256 {
+            return Err(ProverError::SerializationError(format!(
+                "Invalid seal size: expected 256 bytes, got {}",
+                result.len()
+            )));
+        }
+
+        Ok(result)
+    }
+
     /// Generate a proof for the given request
     #[instrument(skip(self, request))]
     pub async fn generate_proof(&self, request: GenerateProofRequest) -> ProofResult {
@@ -391,9 +463,33 @@ impl ProverService {
         // Get image ID from receipt
         let image_id = self.get_image_id(proof_type);
 
-        // Serialize the receipt for transmission
-        let proof_bytes = bincode::serialize(&receipt)
-            .map_err(|e| ProverError::SerializationError(e.to_string()))?;
+        // Extract Groth16 seal from receipt for on-chain verification
+        // The receipt contains the Groth16 proof (A, B, C points) in the seal
+        let groth16_receipt = receipt.inner.groth16().map_err(|e| {
+            ProverError::GenerationFailed(format!("Receipt is not Groth16 format: {}", e))
+        })?;
+
+        // Deserialize the seal bytes to get the Groth16Seal structure
+        let seal: risc0_groth16::Seal = bincode::deserialize(&groth16_receipt.seal)
+            .map_err(|e| ProverError::SerializationError(format!("Failed to deserialize Groth16 seal: {}", e)))?;
+
+        // Convert seal to fixed 256-byte format for NEAR contract
+        // Format: A (G1: 64 bytes) || B (G2: 128 bytes) || C (G1: 64 bytes)
+        let seal_bytes = Self::convert_seal_to_fixed_format(&seal)?;
+
+        info!(
+            "Groth16 seal extracted: {} bytes (image_id: {}, journal: {}, seal: {})",
+            seal_bytes.len() + image_id.len() + receipt.journal.bytes.len(),
+            image_id.len(),
+            receipt.journal.bytes.len(),
+            seal_bytes.len()
+        );
+
+        // Package: image_id (32) + seal (256 bytes fixed) + journal (public outputs)
+        let mut proof_bytes = Vec::new();
+        proof_bytes.extend_from_slice(&image_id);
+        proof_bytes.extend_from_slice(&seal_bytes);
+        proof_bytes.extend_from_slice(&receipt.journal.bytes);
 
         Ok((proof_bytes, image_id, receipt.journal.bytes.clone()))
     }
