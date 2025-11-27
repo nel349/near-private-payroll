@@ -5,7 +5,7 @@
  *
  * @example
  * ```typescript
- * import { PrivatePayroll, WZecToken, ZkVerifier } from '@near-private-payroll/sdk';
+ * import { PrivatePayroll, WZecToken, ZkVerifier, IntentsAdapterSDK } from '@near-private-payroll/sdk';
  *
  * // Initialize
  * const payroll = new PrivatePayroll(near, 'payroll.near');
@@ -16,8 +16,11 @@
  * // Pay employee with ZK proof
  * await payroll.payEmployee('alice.near', encryptedAmount, commitment, '2024-01', proof);
  *
- * // Employee withdraws
+ * // Employee withdraws to NEAR wallet
  * await payroll.withdraw('1000');
+ *
+ * // Employee withdraws to Zcash shielded address (cross-chain)
+ * await payroll.withdrawViaIntents('100000000', DestinationChain.Zcash, 'zs1...');
  * ```
  */
 
@@ -26,6 +29,11 @@ export { WZecToken } from './wzec';
 export { ZkVerifier, ProofType } from './verifier';
 export { Commitment, generateCommitment, verifyCommitment } from './crypto';
 export {
+  IntentsAdapterSDK,
+  buildDepositMessage,
+  parseWithdrawalId,
+} from './intents';
+export {
   Employee,
   EncryptedPayment,
   Disclosure,
@@ -33,4 +41,13 @@ export {
   IncomeProofType,
   VerifiedIncomeProof,
   EmploymentStatus,
+  // Cross-chain types
+  DestinationChain,
+  ZcashAddressType,
+  DepositStatus,
+  WithdrawalStatus,
+  PendingDeposit,
+  PendingWithdrawal,
+  ChainConfig,
+  IntentsAdapterStats,
 } from './types';

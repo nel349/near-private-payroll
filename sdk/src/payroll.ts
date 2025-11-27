@@ -12,6 +12,7 @@ import {
   IncomeProofType,
   VerifiedIncomeProof,
   ContractStats,
+  DestinationChain,
 } from './types';
 
 /** Contract methods interface */
@@ -41,6 +42,12 @@ interface PayrollContractMethods {
     status: EmploymentStatus;
   }) => Promise<void>;
   withdraw: (args: { amount: string }) => Promise<void>;
+  withdraw_via_intents: (args: {
+    amount: string;
+    destination_chain: DestinationChain;
+    destination_address: string;
+  }) => Promise<string>;
+  set_intents_adapter: (args: { intents_adapter: string }) => Promise<void>;
   grant_disclosure: (args: {
     verifier: string;
     disclosure_type: DisclosureType;
@@ -61,6 +68,7 @@ interface PayrollContractMethods {
   get_balance: (args: { employee_id: string }) => Promise<string>;
   get_company_balance: () => Promise<string>;
   get_stats: () => Promise<[number, number, string]>;
+  get_intents_adapter: () => Promise<string | null>;
   is_trusted_verifier: (args: { account_id: string }) => Promise<boolean>;
   get_income_proof: (args: { index: number }) => Promise<VerifiedIncomeProof | null>;
   get_income_proof_count: () => Promise<number>;
@@ -88,6 +96,7 @@ export class PrivatePayroll {
         'get_balance',
         'get_company_balance',
         'get_stats',
+        'get_intents_adapter',
         'is_trusted_verifier',
         'get_income_proof',
         'get_income_proof_count',
@@ -99,12 +108,15 @@ export class PrivatePayroll {
         'pay_employee',
         'update_employee_status',
         'withdraw',
+        'withdraw_via_intents',
+        'set_intents_adapter',
         'grant_disclosure',
         'revoke_disclosure',
         'register_trusted_verifier',
         'remove_trusted_verifier',
         'submit_income_proof',
       ],
+      useLocalViewExecution: false,
     }) as Contract & PayrollContractMethods;
   }
 
@@ -187,15 +199,69 @@ export class PrivatePayroll {
     await this.contract.remove_trusted_verifier({ verifier });
   }
 
+  /**
+   * Set the intents adapter contract address (owner only)
+   *
+   * This enables cross-chain withdrawals via NEAR Intents
+   *
+   * @param intentsAdapterAddress - Address of the intents adapter contract
+   */
+  async setIntentsAdapter(intentsAdapterAddress: string): Promise<void> {
+    await this.contract.set_intents_adapter({
+      intents_adapter: intentsAdapterAddress,
+    });
+  }
+
+  /**
+   * Get the configured intents adapter contract address
+   */
+  async getIntentsAdapter(): Promise<string | null> {
+    return this.contract.get_intents_adapter();
+  }
+
   // ==================== EMPLOYEE OPERATIONS ====================
 
   /**
-   * Withdraw employee balance
+   * Withdraw employee balance to NEAR wallet
    *
    * @param amount - Amount to withdraw (as string for large numbers)
    */
   async withdraw(amount: string): Promise<void> {
     await this.contract.withdraw({ amount });
+  }
+
+  /**
+   * Withdraw employee balance via cross-chain intents
+   *
+   * Supports withdrawals to:
+   * - Zcash (shielded addresses recommended for privacy)
+   * - Solana
+   * - Ethereum
+   * - Bitcoin
+   *
+   * @param amount - Amount to withdraw in wZEC smallest units (8 decimals)
+   * @param destinationChain - Target blockchain
+   * @param destinationAddress - Address on target chain
+   * @returns Withdrawal ID for tracking
+   *
+   * @example
+   * // Withdraw to Zcash shielded address
+   * const withdrawalId = await payroll.withdrawViaIntents(
+   *   '100000000', // 1 ZEC
+   *   DestinationChain.Zcash,
+   *   'zs1j29m7zdmh0s2k2c2fqjcpxlqm9uvr9q3r5xeqf...'
+   * );
+   */
+  async withdrawViaIntents(
+    amount: string,
+    destinationChain: DestinationChain,
+    destinationAddress: string
+  ): Promise<string> {
+    return this.contract.withdraw_via_intents({
+      amount,
+      destination_chain: destinationChain,
+      destination_address: destinationAddress,
+    });
   }
 
   /**
