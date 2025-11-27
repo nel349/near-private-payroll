@@ -517,20 +517,29 @@ impl ProverService {
         let groth16_seal = risc0_groth16::prove::shrink_wrap(&seal_bytes)
             .map_err(|e| ProverError::GenerationFailed(format!("Groth16 conversion failed: {}", e)))?;
 
-        // Convert Groth16 seal to fixed 256-byte format
-        let seal_bytes = Self::convert_seal_to_fixed_format(&groth16_seal)?;
+        // Use built-in to_vec() method - RISC Zero outputs in Ethereum-compatible format
+        let seal_bytes = groth16_seal.to_vec();
+
+        // Compute claim digest (required for RISC Zero universal Groth16 verification)
+        use risc0_zkvm::sha::Digestible;
+        let claim_digest = identity_receipt.claim.digest();
+        let claim_digest_bytes: [u8; 32] = claim_digest.as_bytes().try_into()
+            .map_err(|_| ProverError::GenerationFailed("Invalid claim digest size".to_string()))?;
 
         info!(
-            "Groth16 proof generated: {} bytes (image_id: {}, seal: {}, journal: {})",
-            image_id.len() + seal_bytes.len() + receipt.journal.bytes.len(),
+            "Groth16 proof generated: {} bytes (image_id: {}, claim_digest: {}, seal: {}, journal: {})",
+            image_id.len() + claim_digest_bytes.len() + seal_bytes.len() + receipt.journal.bytes.len(),
             image_id.len(),
+            claim_digest_bytes.len(),
             seal_bytes.len(),
             receipt.journal.bytes.len()
         );
 
-        // Package: image_id (32) + seal (256 bytes fixed) + journal (public outputs)
+        // Package: image_id (32) + claim_digest (32) + seal (256) + journal (public outputs)
+        // This matches the format expected by the NEAR zk-verifier contract
         let mut proof_bytes = Vec::new();
         proof_bytes.extend_from_slice(&image_id);
+        proof_bytes.extend_from_slice(&claim_digest_bytes);
         proof_bytes.extend_from_slice(&seal_bytes);
         proof_bytes.extend_from_slice(&receipt.journal.bytes);
 

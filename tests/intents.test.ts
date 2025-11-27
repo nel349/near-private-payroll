@@ -20,7 +20,7 @@ import {
   randomBytes32,
   computeCommitment,
   stringToBytes32,
-} from './setup.js';
+} from './setup.ts';
 
 let ctx: TestContext;
 

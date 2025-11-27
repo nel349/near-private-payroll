@@ -13,6 +13,9 @@ serde = { workspace = true }
 borsh = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+hex-literal = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"
 bincode = "1.3"
 
 # We'll use NEAR's alt_bn128 precompiles directly

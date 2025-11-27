@@ -1,56 +1,70 @@
-// Utility to extract RISC Zero Groth16 verification key
+// Utility to extract RISC Zero Groth16 verification key and control IDs
 // Run with: cargo test --test extract_vk -- --nocapture
 
-use risc0_groth16;
+use risc0_circuit_recursion::control_id::BN254_IDENTITY_CONTROL_ID;
+
+fn bytes_to_json_array(bytes: &[u8]) -> String {
+    let elements: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+    format!("[{}]", elements.join(", "))
+}
 
 #[test]
 fn extract_verification_key() {
-    // Get the RISC Zero Groth16 verification key
-    let vk = risc0_groth16::verifying_key();
+    println!("\n====================================================");
+    println!("RISC Zero Universal Groth16 Verification Parameters");
+    println!("====================================================\n");
 
-    // The VerifyingKey is a newtype wrapper, access inner field with .0
-    let ark_vk = &vk.0;
+    // Control ID
+    println!("=== BN254 Control ID ===");
+    println!("BN254_IDENTITY_CONTROL_ID (hex): {}", hex::encode(BN254_IDENTITY_CONTROL_ID));
+    println!("BN254_IDENTITY_CONTROL_ID (bytes): {}", bytes_to_json_array(BN254_IDENTITY_CONTROL_ID.as_bytes()));
+    println!();
 
-    println!("\n=== RISC Zero Groth16 Verification Key ===\n");
-    println!("⚠️  IMPORTANT: RISC Zero uses ONE universal verification key");
-    println!("    for ALL circuits (verified via recursion).\n");
+    // VK Constants from RISC Zero's verifier.rs
+    // These are the actual constants used in risc0-groth16-3.0.3/src/verifier.rs:36-76
+    println!("=== Universal Verification Key Constants ===");
+    println!("(These match risc0-groth16-3.0.3/src/verifier.rs)\n");
 
-    // Extract alpha_g1
-    let alpha = &ark_vk.alpha_g1;
-    println!("alpha_g1 (G1 point):");
-    println!("  Affine coords exist: {:?}", alpha.is_on_curve());
+    println!("ALPHA_X = \"20491192805390485299153009773594534940189261866228447918068658471970481763042\"");
+    println!("ALPHA_Y = \"9383485363053290200918347156157836566562967994039712273449902621266178545958\"");
+    println!();
 
-    // Extract beta_g2
-    let beta = &ark_vk.beta_g2;
-    println!("\nbeta_g2 (G2 point):");
-    println!("  Affine coords exist: {:?}", beta.is_on_curve());
+    println!("BETA_X1 = \"4252822878758300859123897981450591353533073413197771768651442665752259397132\"");
+    println!("BETA_X2 = \"6375614351688725206403948262868962793625744043794305715222011528459656738731\"");
+    println!("BETA_Y1 = \"21847035105528745403288232691147584728191162732299865338377159692350059136679\"");
+    println!("BETA_Y2 = \"10505242626370262277552901082094356697409835680220590971873171140371331206856\"");
+    println!();
 
-    // Extract gamma_g2
-    let gamma = &ark_vk.gamma_g2;
-    println!("\ngamma_g2 (G2 point):");
-    println!("  Affine coords exist: {:?}", gamma.is_on_curve());
+    println!("GAMMA_X1 = \"11559732032986387107991004021392285783925812861821192530917403151452391805634\"");
+    println!("GAMMA_X2 = \"10857046999023057135944570762232829481370756359578518086990519993285655852781\"");
+    println!("GAMMA_Y1 = \"4082367875863433681332203403145435568316851327593401208105741076214120093531\"");
+    println!("GAMMA_Y2 = \"8495653923123431417604973247489272438418190587263600148770280649306958101930\"");
+    println!();
 
-    // Extract delta_g2
-    let delta = &ark_vk.delta_g2;
-    println!("\ndelta_g2 (G2 point):");
-    println!("  Affine coords exist: {:?}", delta.is_on_curve());
+    println!("DELTA_X1 = \"1668323501672964604911431804142266013250380587483576094566949227275849579036\"");
+    println!("DELTA_X2 = \"12043754404802191763554326994664886008979042643626290185762540825416902247219\"");
+    println!("DELTA_Y1 = \"7710631539206257456743780535472368339139328733484942210876916214502466455394\"");
+    println!("DELTA_Y2 = \"13740680757317479711909903993315946540841369848973133181051452051592786724563\"");
+    println!();
 
-    // Extract gamma_abc_g1 (IC points)
-    println!("\ngamma_abc_g1 (IC points):");
-    println!("  Total IC points: {}", ark_vk.gamma_abc_g1.len());
-    println!("  Public inputs: {}", ark_vk.gamma_abc_g1.len() - 1);
+    println!("IC0_X = \"8446592859352799428420270221449902464741693648963397251242447530457567083492\"");
+    println!("IC0_Y = \"1064796367193003797175961162477173481551615790032213185848276823815288302804\"");
+    println!("IC1_X = \"3179835575189816632597428042194253779818690147323192973511715175294048485951\"");
+    println!("IC1_Y = \"20895841676865356752879376687052266198216014795822152491318012491767775979074\"");
+    println!("IC2_X = \"5332723250224941161709478398807683311971555792614491788690328996478511465287\"");
+    println!("IC2_Y = \"21199491073419440416471372042641226693637837098357067793586556692319371762571\"");
+    println!("IC3_X = \"12457994489566736295787256452575216703923664299075106359829199968023158780583\"");
+    println!("IC3_Y = \"19706766271952591897761291684837117091856807401404423804318744964752784280790\"");
+    println!("IC4_X = \"19617808913178163826953378459323299110911217259216006187355745713323154132237\"");
+    println!("IC4_Y = \"21663537384585072695701846972542344484111393047775983928357046779215877070466\"");
+    println!("IC5_X = \"6834578911681792552110317589222010969491336870276623105249474534788043166867\"");
+    println!("IC5_Y = \"15060583660288623605191393599883223885678013570733629274538391874953353488393\"");
+    println!();
 
-    println!("\n=== Summary ===");
+    println!("=== Summary ===");
     println!("This is RISC Zero's universal Groth16 verification key.");
-    println!("It verifies the RECURSION circuit, not individual application circuits.");
-    println!("\nApplication circuit verification happens in the STARK layer.");
-    println!("The Groth16 layer only proves: 'this STARK proof is valid'");
-
-    println!("\n=== Registration ===");
-    println!("You can register this SAME key for ALL proof types:");
-    println!("  - IncomeThreshold");
-    println!("  - IncomeRange");
-    println!("  - CreditScore");
-    println!("  - Payment");
-    println!("  - Balance");
+    println!("Public inputs expected: 5 (control_root_a0, control_root_a1, claim_c0, claim_c1, bn254_control_id)");
+    println!("IC points count: 6 (= 5 public inputs + 1)");
+    println!();
+    println!("Next: Port these constants to the zk-verifier contract");
 }
