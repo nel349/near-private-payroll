@@ -20,7 +20,7 @@
 
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::UnorderedMap;
-use near_sdk::serde::{Deserialize, Deserializer, Serialize};
+use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey, NearSchema, PanicOnDefault};
 use sha2::{Digest, Sha256};
 
@@ -672,7 +672,8 @@ impl ZkVerifier {
         ));
 
         // Perform RISC Zero Groth16 verification
-        let is_valid = self.verify_risc_zero_groth16(&proof, &claim_digest);
+        // Pass the actual receipt_image_id, not a hardcoded constant (Bug #4 fix)
+        let is_valid = self.verify_risc_zero_groth16(&proof, &receipt_image_id, &claim_digest);
 
         if is_valid {
             env::log_str("RISC Zero Groth16 verification PASSED");
@@ -708,19 +709,19 @@ impl ZkVerifier {
         env::log_str(&format!("A.x (LE): {}", hex::encode(&a_x[..8])));
 
         // Parse B (G2 point)
-        // Receipt format: x_c0 || x_c1 || y_c0 || y_c1 (each 32 bytes, little-endian)
-        // RISC Zero seal is ALREADY in NEAR format [c0, c1, c0, c1] - NO SWAP NEEDED!
+        // Receipt format: x_c1 || x_c0 || y_c1 || y_c0 (Ethereum format: [c1, c0])
+        // NEAR expects: [c0, c1, c0, c1] - SO WE MUST SWAP!
         let mut b_x_c0 = [0u8; 32];
         let mut b_x_c1 = [0u8; 32];
         let mut b_y_c0 = [0u8; 32];
         let mut b_y_c1 = [0u8; 32];
 
-        b_x_c0.copy_from_slice(&data[64..96]);    // Read x_c0 (imaginary) directly
-        b_x_c1.copy_from_slice(&data[96..128]);   // Read x_c1 (real) directly
-        b_y_c0.copy_from_slice(&data[128..160]);  // Read y_c0 (imaginary) directly
-        b_y_c1.copy_from_slice(&data[160..192]);  // Read y_c1 (real) directly
+        b_x_c0.copy_from_slice(&data[96..128]);   // SWAP: read x_c0 from position 2
+        b_x_c1.copy_from_slice(&data[64..96]);    // SWAP: read x_c1 from position 1
+        b_y_c0.copy_from_slice(&data[160..192]);  // SWAP: read y_c0 from position 4
+        b_y_c1.copy_from_slice(&data[128..160]);  // SWAP: read y_c1 from position 3
 
-        env::log_str(&format!("B.x_c0 (LE): {}", hex::encode(&b_x_c0[..8])));
+        env::log_str(&format!("B.x_c0 (LE, swapped from pos 96): {}", hex::encode(&b_x_c0[..8])));
 
         // Parse C (G1 point) - little-endian, no reversal
         let mut c_x = [0u8; 32];
@@ -735,10 +736,10 @@ impl ZkVerifier {
         Groth16Proof {
             a: G1Point { x: a_x, y: a_y },
             b: G2Point {
-                x_c0: b_x_c0, // Contains x_c0 (imaginary component)
-                x_c1: b_x_c1, // Contains x_c1 (real component)
-                y_c0: b_y_c0, // Contains y_c0 (imaginary component)
-                y_c1: b_y_c1, // Contains y_c1 (real component)
+                x_c0: b_x_c0, // SWAPPED: now contains x_c0 (imaginary) from position 96
+                x_c1: b_x_c1, // SWAPPED: now contains x_c1 (real) from position 64
+                y_c0: b_y_c0, // SWAPPED: now contains y_c0 (imaginary) from position 160
+                y_c1: b_y_c1, // SWAPPED: now contains y_c1 (real) from position 128
             },
             c: G1Point { x: c_x, y: c_y },
         }
@@ -748,21 +749,16 @@ impl ZkVerifier {
     /// Uses RISC Zero's ONE universal verification key for ALL circuits
     ///
     /// Public inputs (5 field elements):
-    /// - control_root_a0, control_root_a1 (from ALLOWED_CONTROL_ROOT)
+    /// - control_root_a0, control_root_a1 (from image_id)
     /// - claim_c0, claim_c1 (from split_digest(claim_digest))
     /// - bn254_control_id (BN254_IDENTITY_CONTROL_ID)
     fn verify_risc_zero_groth16(
         &self,
         proof: &Groth16Proof,
+        image_id: &[u8; 32],
         claim_digest: &[u8; 32],
     ) -> bool {
         // RISC Zero constants (from risc0-circuit-recursion and risc0-groth16)
-
-        // ALLOWED_CONTROL_ROOT from risc0-circuit-recursion 4.0.3
-        // This is the control root that RISC Zero uses for recursion
-        const CONTROL_ROOT: [u8; 32] = hex_literal::hex!(
-            "a54dc85ac99f851c92d7c96d7318af41dbe7c0194edfcc37eb4d422a998c1f56"
-        );
 
         // BN254_IDENTITY_CONTROL_ID from risc0-circuit-recursion 4.0.3
         // NOTE: Original value c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404
@@ -774,7 +770,8 @@ impl ZkVerifier {
         );
 
         // Split digests into two 128-bit halves (as per RISC Zero Solidity verifier)
-        let (control_a0, control_a1) = self.split_digest(&CONTROL_ROOT);
+        // Use the ACTUAL image_id from the receipt, not a hardcoded constant
+        let (control_a0, control_a1) = self.split_digest(image_id);
         let (claim_c0, claim_c1) = self.split_digest(claim_digest);
 
         // BN254_CONTROL_ID: reverse for little-endian (NEAR alt_bn128 format)
@@ -1002,6 +999,7 @@ impl ZkVerifier {
     /// Verifies: e(-A, B) × e(α, β) × e(L, γ) × e(C, δ) = 1
     ///
     /// Uses NEAR's alt_bn128_pairing_check precompile
+    #[allow(dead_code)]
     fn verify_groth16_pairing(
         &self,
         proof: &Groth16Proof,
@@ -1036,6 +1034,7 @@ impl ZkVerifier {
         env::alt_bn128_pairing_check(&pairing_input)
     }
 
+    #[allow(dead_code)]
     /// Compute public input scalar from journal
     /// We hash the journal to get a field element
     fn compute_public_input_scalar(&self, journal: &[u8]) -> [u8; 32] {
@@ -1051,6 +1050,7 @@ impl ZkVerifier {
 
     /// Compute linear combination: result = IC[0] + scalar * IC[1] + ...
     /// Uses alt_bn128_g1_multiexp for efficient computation
+    #[allow(dead_code)]
     fn compute_linear_combination(&self, ic: &[G1Point], scalars: &[[u8; 32]]) -> G1Point {
         if ic.is_empty() {
             return G1Point { x: [0; 32], y: [0; 32] };
@@ -1096,6 +1096,7 @@ impl ZkVerifier {
     }
 
     /// Add two G1 points using alt_bn128_g1_sum
+    #[allow(dead_code)]
     fn add_g1_points(&self, p1: &G1Point, p2: &G1Point) -> G1Point {
         // Format for alt_bn128_g1_sum: consecutive points
         // Each point: x (32) || y (32) || sign (1 byte, 0 for positive)
@@ -1122,6 +1123,7 @@ impl ZkVerifier {
         sum
     }
 
+    #[allow(dead_code)]
     /// Negate a G1 point (flip y coordinate in the field)
     fn negate_g1(&self, p: &G1Point) -> G1Point {
         // For BN254, negation is: (x, -y mod p)
@@ -1144,6 +1146,7 @@ impl ZkVerifier {
 
     /// Build pairing input for 4 pairs: (G1, G2) each
     /// Format for alt_bn128_pairing_check: consecutive pairs
+    #[allow(dead_code)]
     /// Each pair: G1 (64 bytes) || G2 (128 bytes) = 192 bytes
     /// NO count prefix - just raw pairs
     fn build_pairing_input(

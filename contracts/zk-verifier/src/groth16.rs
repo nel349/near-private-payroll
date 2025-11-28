@@ -14,6 +14,7 @@ use crate::{G1Point, G2Point, Groth16Proof, Groth16VerificationKey};
 /// RISC Zero Groth16 Seal structure (matches risc0_groth16::Seal)
 /// This is the format that RISC Zero uses when serializing Groth16 proofs
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 struct RiscZeroSeal {
     /// Proof point A (G1): Vec of 2 elements [x_bytes, y_bytes]
     pub a: Vec<Vec<u8>>,
@@ -32,6 +33,7 @@ struct RiscZeroSeal {
 /// - Proof point C (G1 point in big-endian)
 ///
 /// RISC Zero's seal format uses nested Vec structures which we convert to fixed-size arrays.
+#[allow(dead_code)]
 pub fn parse_risc_zero_seal(seal_bytes: &[u8]) -> Result<Groth16Proof, String> {
     env::log_str("=== PARSING RISC ZERO SEAL ===");
     env::log_str(&format!("Seal length: {} bytes", seal_bytes.len()));

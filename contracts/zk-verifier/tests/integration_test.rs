@@ -1,7 +1,7 @@
 // Integration tests using NEAR Workspaces (local sandbox)
 // Run with: cargo test -p zk-verifier --test integration_test
 
-use near_workspaces::{Account, Contract};
+use near_workspaces;
 use serde_json::json;
 
 const WASM_FILEPATH: &str = "../../target/near/zk_verifier/zk_verifier.wasm";
@@ -343,6 +343,12 @@ async fn test_real_proof_verification() -> Result<(), Box<dyn std::error::Error>
         .transact()
         .await?;
 
+    if !register_result.is_success() {
+        println!("VK registration FAILED!");
+        println!("Result: {:?}", register_result);
+        println!("Logs: {:?}", register_result.logs());
+        println!("Failures: {:?}", register_result.failures());
+    }
     assert!(register_result.is_success(), "VK registration failed");
     println!("✓ Verification key registered");
 
