@@ -864,20 +864,22 @@ impl ZkVerifier {
         const ALPHA_G1_X: [u8; 32] = hex_literal::hex!("e2f26dbea299f5223b646cb1fb33eadb059d9407559d7441dfd902e3a79a4d2d");
         const ALPHA_G1_Y: [u8; 32] = hex_literal::hex!("26194d00ffca76f0010323190a8389ce45e39f2060ecd861b0ce373c50ddbe14");
 
-        const BETA_G2_X_C0: [u8; 32] = hex_literal::hex!("abb73dc17fbc13021e2471e0c08bd67d8401f52b73d6d07483794cad4778180e");  // x real
-        const BETA_G2_X_C1: [u8; 32] = hex_literal::hex!("0c06f33bbc4c79a9cadef253a68084d382f17788f885c9afd176f7cb2f036709");  // x imaginary
-        const BETA_G2_Y_C0: [u8; 32] = hex_literal::hex!("c8ced07a54067fd5a905ea3ec6b796f892912f4dd2233131c7a857a4b1c13917");  // y real
-        const BETA_G2_Y_C1: [u8; 32] = hex_literal::hex!("a74623114d9aa69d370d7a6bc4defdaa3c8c3fd947e8f5994a708ae0d1fb4c30");  // y imaginary
+        // VK G2 constants: c0 contains IMAGINARY (X2/Y2), c1 contains REAL (X1/Y1)
+        // This matches NEAR's expected serialization format: imaginary || real
+        const BETA_G2_X_C0: [u8; 32] = hex_literal::hex!("abb73dc17fbc13021e2471e0c08bd67d8401f52b73d6d07483794cad4778180e");  // x imaginary (BETA_X2)
+        const BETA_G2_X_C1: [u8; 32] = hex_literal::hex!("0c06f33bbc4c79a9cadef253a68084d382f17788f885c9afd176f7cb2f036709");  // x real (BETA_X1)
+        const BETA_G2_Y_C0: [u8; 32] = hex_literal::hex!("c8ced07a54067fd5a905ea3ec6b796f892912f4dd2233131c7a857a4b1c13917");  // y imaginary (BETA_Y2)
+        const BETA_G2_Y_C1: [u8; 32] = hex_literal::hex!("a74623114d9aa69d370d7a6bc4defdaa3c8c3fd947e8f5994a708ae0d1fb4c30");  // y real (BETA_Y1)
 
-        const GAMMA_G2_X_C0: [u8; 32] = hex_literal::hex!("edf692d95cbdde46ddda5ef7d422436779445c5e66006a42761e1f12efde0018");  // x real
-        const GAMMA_G2_X_C1: [u8; 32] = hex_literal::hex!("c212f3aeb785e49712e7a9353349aaf1255dfb31b7bf60723a480d9293938e19");  // x imaginary
-        const GAMMA_G2_Y_C0: [u8; 32] = hex_literal::hex!("aa7dfa6601cce64c7bd3430c69e7d1e38f40cb8d8071ab4aeb6d8cdba55ec812");  // y real
-        const GAMMA_G2_Y_C1: [u8; 32] = hex_literal::hex!("5b9722d1dcdaac55f38eb37033314bbc95330c69ad999eec75f05f58d0890609");  // y imaginary
+        const GAMMA_G2_X_C0: [u8; 32] = hex_literal::hex!("edf692d95cbdde46ddda5ef7d422436779445c5e66006a42761e1f12efde0018");  // x imaginary (GAMMA_X2)
+        const GAMMA_G2_X_C1: [u8; 32] = hex_literal::hex!("c212f3aeb785e49712e7a9353349aaf1255dfb31b7bf60723a480d9293938e19");  // x real (GAMMA_X1)
+        const GAMMA_G2_Y_C0: [u8; 32] = hex_literal::hex!("aa7dfa6601cce64c7bd3430c69e7d1e38f40cb8d8071ab4aeb6d8cdba55ec812");  // y imaginary (GAMMA_Y2)
+        const GAMMA_G2_Y_C1: [u8; 32] = hex_literal::hex!("5b9722d1dcdaac55f38eb37033314bbc95330c69ad999eec75f05f58d0890609");  // y real (GAMMA_Y1)
 
-        const DELTA_G2_X_C0: [u8; 32] = hex_literal::hex!("33033e7fea1f40604eaacf699d4be9aacc577054a0db22d9129a1728ff85a01a");  // x real
-        const DELTA_G2_X_C1: [u8; 32] = hex_literal::hex!("1c3af829b62bf4914c0bcf2c81a4bd577190eff5f194ee9bac95faefd53cb003");  // x imaginary
-        const DELTA_G2_Y_C0: [u8; 32] = hex_literal::hex!("d3c63f7d18df42711cea2f9ed5742d0b2d8318831767e837e857f7cb1ff3601e");  // y real
-        const DELTA_G2_Y_C1: [u8; 32] = hex_literal::hex!("6207030d94d2915cca2872fb6e3668a8aec918d5460849f6190b204f13100c11");  // y imaginary
+        const DELTA_G2_X_C0: [u8; 32] = hex_literal::hex!("33033e7fea1f40604eaacf699d4be9aacc577054a0db22d9129a1728ff85a01a");  // x imaginary (DELTA_X2)
+        const DELTA_G2_X_C1: [u8; 32] = hex_literal::hex!("1c3af829b62bf4914c0bcf2c81a4bd577190eff5f194ee9bac95faefd53cb003");  // x real (DELTA_X1)
+        const DELTA_G2_Y_C0: [u8; 32] = hex_literal::hex!("d3c63f7d18df42711cea2f9ed5742d0b2d8318831767e837e857f7cb1ff3601e");  // y imaginary (DELTA_Y2)
+        const DELTA_G2_Y_C1: [u8; 32] = hex_literal::hex!("6207030d94d2915cca2872fb6e3668a8aec918d5460849f6190b204f13100c11");  // y real (DELTA_Y1)
 
         // IC points (6 total = 5 public inputs + 1)
         const IC0_X: [u8; 32] = hex_literal::hex!("e43bdc655d0f9d730535554d9caa611ddd152c081a06a932a8e1d5dc259aac12");
@@ -958,16 +960,17 @@ impl ZkVerifier {
         pairing_input.extend_from_slice(&g1_gen_x);
         pairing_input.extend_from_slice(&g1_gen_y);
 
-        // Test with VK beta_g2 point - NEAR expects Fq2 components SWAPPED
-        pairing_input.extend_from_slice(&BETA_G2_X_C1);  // imaginary FIRST
-        pairing_input.extend_from_slice(&BETA_G2_X_C0);  // real SECOND
-        pairing_input.extend_from_slice(&BETA_G2_Y_C1);  // imaginary FIRST
-        pairing_input.extend_from_slice(&BETA_G2_Y_C0);  // real SECOND
+        // VK G2 constants already have c0 = imaginary, c1 = real
+        // Serialize as c0, c1 (NO SWAP) to send imaginary || real to NEAR
+        pairing_input.extend_from_slice(&BETA_G2_X_C0);  // imaginary (stored in c0)
+        pairing_input.extend_from_slice(&BETA_G2_X_C1);  // real (stored in c1)
+        pairing_input.extend_from_slice(&BETA_G2_Y_C0);  // imaginary (stored in c0)
+        pairing_input.extend_from_slice(&BETA_G2_Y_C1);  // real (stored in c1)
 
         env::log_str("=== TESTING VK BETA_G2 POINT ===");
         env::log_str(&format!("Input length: {} bytes", pairing_input.len()));
-        env::log_str(&format!("beta_g2.x_c0: {}", hex::encode(&BETA_G2_X_C0[..8])));
-        env::log_str(&format!("beta_g2.x_c1: {}", hex::encode(&BETA_G2_X_C1[..8])));
+        env::log_str(&format!("beta_g2.x_c0 (imag): {}", hex::encode(&BETA_G2_X_C0[..8])));
+        env::log_str(&format!("beta_g2.x_c1 (real): {}", hex::encode(&BETA_G2_X_C1[..8])));
 
         // alt_bn128_pairing_check returns bool, will panic if G2 point is invalid
         let result = env::alt_bn128_pairing_check(&pairing_input);
@@ -1177,13 +1180,12 @@ impl ZkVerifier {
 
         // G2: x_c0 || x_c1 || y_c0 || y_c1 (128 bytes)
         // NO SWAP: Use fields as-is
-        // Proof B is already parsed with SWAP, so its c0 field contains c1 data
-        // VK G2 points are stored in normal c0,c1 order
-        // When serialized, both end up in the format NEAR expects
-        buffer.extend_from_slice(&g2.x_c0);  // Proof B: contains c1 data | VK: contains c0 data
-        buffer.extend_from_slice(&g2.x_c1);  // Proof B: contains c0 data | VK: contains c1 data
-        buffer.extend_from_slice(&g2.y_c0);  // Proof B: contains c1 data | VK: contains c0 data
-        buffer.extend_from_slice(&g2.y_c1);  // Proof B: contains c0 data | VK: contains c1 data
+        // Both Proof B and VK G2 have: c0 = imaginary, c1 = real
+        // Serializing as c0, c1 sends: imaginary || real (NEAR's expected format)
+        buffer.extend_from_slice(&g2.x_c0);  // imaginary component
+        buffer.extend_from_slice(&g2.x_c1);  // real component
+        buffer.extend_from_slice(&g2.y_c0);  // imaginary component
+        buffer.extend_from_slice(&g2.y_c1);  // real component
     }
 
     fn record_verification(

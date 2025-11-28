@@ -202,7 +202,7 @@ pub fn verify_groth16(
     // Returns true if the pairing equation holds
     env::log_str("=== CALLING PAIRING CHECK ===");
     env::log_str(&format!("Input length: {} bytes (expected 768)", pairing_input.len()));
-    env::log_str(&format!("G2 format: c0||c1 (real||imaginary)"));
+    env::log_str(&format!("G2 format: c0||c1 (imaginary||real)"));
 
     // Log proof points for debugging
     env::log_str(&format!("Proof A: x={}, y={}",

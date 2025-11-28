@@ -493,3 +493,124 @@ As outlined in Section 8:
 
 **Key Takeaway:**
 The custom 464-byte receipt format is working as designed. The pairing failure is unrelated to the format choice - it's likely in VK values, public inputs, or pairing construction.
+
+## 10. VK Constants Investigation - NOVEMBER 28, 2025
+
+**OBJECTIVE:** Verify VK constants match RISC Zero's verifier.rs byte-for-byte (Section 8, Step 1)
+
+### Investigation Process
+
+**Step 1: Locate RISC Zero's VK Constants**
+- Found in `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/risc0-groth16-3.0.3/src/verifier.rs`
+- Constants stored as decimal strings (lines 36-76)
+- Format: `ALPHA_X`, `ALPHA_Y`, `BETA_X1`, `BETA_X2`, etc.
+
+**Step 2: Create Comparison Tool**
+- Created `scripts/compare_vk_constants.py`
+- Converts RISC Zero decimal strings → little-endian hex
+- Compares byte-for-byte with our contract constants
+
+**Step 3: Initial Comparison Results**
+Running the script revealed:
+- ✅ ALPHA_G1 (G1): Perfect match
+- ✅ All IC points (G1): Perfect match
+- ❌ ALL VK G2 constants (BETA, GAMMA, DELTA): c0 and c1 SWAPPED
+
+**Initial Analysis (INCORRECT):**
+Thought the issue was that VK constants needed to be swapped to match RISC Zero's format.
+- RISC Zero has: X1 (real), X2 (imaginary)
+- Thought our constants should map: X1→c0, X2→c1
+- Applied swap: Changed c0 to contain X1, c1 to contain X2
+
+**Test Results After "Fix":**
+- ❌ VK G2 validation FAILED with "invalid g2" error
+- Error showed NEAR rejecting the VK beta point
+
+### Critical Realization
+
+**The "fix" was WRONG!** The comparison script mapping was backwards.
+
+**Correct Understanding:**
+1. **NEAR expects G2 points:** imaginary || real (Fq2 components)
+2. **Our storage convention:** c0 field, c1 field (serialized as c0||c1)
+3. **To produce imaginary||real:** c0 must contain imaginary, c1 must contain real
+4. **Therefore:** c0 = X2 (imaginary), c1 = X1 (real)
+
+**The ORIGINAL VK constants were CORRECT:**
+```rust
+// Before my incorrect "fix" (ORIGINAL - CORRECT)
+BETA_G2_X_C0: "abb73dc1..." // X2 (imaginary) ✅ CORRECT
+BETA_G2_X_C1: "0c06f33b..." // X1 (real)      ✅ CORRECT
+```
+
+**My incorrect "fix" broke them:**
+```rust
+// After my swap (WRONG - broke validation)
+BETA_G2_X_C0: "0c06f33b..." // X1 (real)      ❌ WRONG
+BETA_G2_X_C1: "abb73dc1..." // X2 (imaginary) ❌ WRONG
+```
+
+### Resolution
+
+**Reverted the VK constants** to their original values:
+- BETA_G2: c0 = X2 (imaginary), c1 = X1 (real)
+- GAMMA_G2: c0 = X2 (imaginary), c1 = X1 (real)
+- DELTA_G2: c0 = X2 (imaginary), c1 = X1 (real)
+
+**Updated comments** to reflect correct understanding:
+```rust
+// VK G2 constants: c0 contains IMAGINARY (X2/Y2), c1 contains REAL (X1/Y1)
+// This matches NEAR's expected serialization format: imaginary || real
+```
+
+**Updated comparison script mapping** (for future reference):
+- RISC Zero's X2 (imaginary) → Our c0
+- RISC Zero's X1 (real) → Our c1
+- RISC Zero's Y2 (imaginary) → Our c0
+- RISC Zero's Y1 (real) → Our c1
+
+### Test Results After Revert
+
+✅ **VK G2 point validation: PASSES**
+- `test_vk_g2_point_validation` now succeeds
+- NEAR accepts VK beta_g2 point without "invalid g2" error
+
+❌ **Pairing check: Still returns FALSE**
+- All pre-pairing operations succeed
+- G2 validation passes
+- Linear combination computes successfully
+- Pairing equation returns FALSE
+
+### Analysis
+
+**VK Constants Status: ✅ CONFIRMED CORRECT**
+- Original VK constants match RISC Zero's verifier.rs exactly
+- Format: c0 = imaginary (X2/Y2), c1 = real (X1/Y1)
+- Consistent with proof B parsing: c0 = imaginary, c1 = real
+- Both serialize to: imaginary || real (NEAR's expected format)
+
+**The Pairing Failure is NOT caused by VK constants.**
+
+According to Section 8's investigation plan, with VK constants confirmed correct, the remaining possible causes are:
+
+1. **Public Input Computation** (Section 8, Step 2)
+   - Journal → scalar conversion
+   - Field element encoding
+   - Padding/endianness issues
+
+2. **Pairing Construction** (Section 8, Step 3)
+   - Pair ordering
+   - Point negation (-A vs A)
+   - Sign conventions
+
+3. **Proof Validity** (unlikely)
+   - Proof may not actually verify
+   - Though RISC Zero generates it, so very unlikely
+
+### Current Status
+
+- ✅ VK constants verified correct (Section 8, Step 1 COMPLETE)
+- ✅ G2 serialization format verified correct (Section 7 COMPLETE)
+- ✅ Custom receipt format verified correct (Section 9 COMPLETE)
+- ⏳ **NEXT**: Investigate public input computation (Section 8, Step 2)
+- ⏳ **THEN**: Test pairing pair ordering/negation (Section 8, Step 3)
