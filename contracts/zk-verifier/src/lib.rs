@@ -687,47 +687,46 @@ impl ZkVerifier {
     /// Format: A(64 bytes) || B(128 bytes) || C(64 bytes)
     ///
     /// NOTE: RISC Zero's Groth16 seal is encoded in BIG-ENDIAN format (confirmed in risc0-groth16 source).
-    /// CRITICAL: NEAR's alt_bn128 precompiles expect LITTLE-ENDIAN format!
-    /// This is DIFFERENT from Ethereum's EIP-197 which uses BIG-ENDIAN.
-    /// Proof-server sends LITTLE-ENDIAN, we use as-is (NO REVERSAL).
+    /// Parse Groth16 proof from receipt bytes
+    ///
+    /// EMPIRICALLY DETERMINED FORMAT (from systematic testing):
+    /// - Component ordering: SWAP (c1,c0) - Receipt has c0||c1, but NEAR expects c1||c0
+    /// - Byte endianness: NO REVERSAL - Use little-endian bytes as-is
+    ///
+    /// This is the ONLY configuration that passes NEAR's G2 point validation.
     fn parse_groth16_proof(&self, data: &[u8]) -> Groth16Proof {
         assert!(data.len() >= 256, "Invalid proof data length");
 
         env::log_str("=== PARSING GROTH16 PROOF ===");
 
-        // Parse A (G1 point)
-        // Proof-server sends LITTLE-ENDIAN, NEAR expects LITTLE-ENDIAN
+        // Parse A (G1 point) - little-endian, no reversal
         let mut a_x = [0u8; 32];
         let mut a_y = [0u8; 32];
-        a_x.copy_from_slice(&data[0..32]);   // Use as-is (LE)
-        a_y.copy_from_slice(&data[32..64]);  // Use as-is (LE)
-        // NO REVERSAL - NEAR uses LE!
+        a_x.copy_from_slice(&data[0..32]);
+        a_y.copy_from_slice(&data[32..64]);
 
         env::log_str(&format!("A.x (LE): {}", hex::encode(&a_x[..8])));
 
         // Parse B (G2 point)
-        // Proof-server sends in LITTLE-ENDIAN format: (c0, c1) components
-        // NEAR expects LITTLE-ENDIAN (different from Ethereum!)
+        // Receipt format: x_c0 || x_c1 || y_c0 || y_c1 (each 32 bytes, little-endian)
+        // NEAR expects: SWAPPED components (c1 in c0 position, c0 in c1 position)
         let mut b_x_c0 = [0u8; 32];
         let mut b_x_c1 = [0u8; 32];
         let mut b_y_c0 = [0u8; 32];
         let mut b_y_c1 = [0u8; 32];
 
-        b_x_c0.copy_from_slice(&data[64..96]);    // Use as-is (LE)
-        b_x_c1.copy_from_slice(&data[96..128]);   // Use as-is (LE)
-        b_y_c0.copy_from_slice(&data[128..160]);  // Use as-is (LE)
-        b_y_c1.copy_from_slice(&data[160..192]);  // Use as-is (LE)
-        // NO REVERSAL - NEAR uses LE!
+        b_x_c0.copy_from_slice(&data[96..128]);   // SWAP: read receipt's x_c1 into x_c0
+        b_x_c1.copy_from_slice(&data[64..96]);    // SWAP: read receipt's x_c0 into x_c1
+        b_y_c0.copy_from_slice(&data[160..192]);  // SWAP: read receipt's y_c1 into y_c0
+        b_y_c1.copy_from_slice(&data[128..160]);  // SWAP: read receipt's y_c0 into y_c1
 
-        env::log_str(&format!("B.x_c0 (LE, real): {}", hex::encode(&b_x_c0[..8])));
+        env::log_str(&format!("B.x_c0 (LE, swapped): {}", hex::encode(&b_x_c0[..8])));
 
-        // Parse C (G1 point)
-        // Proof-server sends LITTLE-ENDIAN, NEAR expects LITTLE-ENDIAN
+        // Parse C (G1 point) - little-endian, no reversal
         let mut c_x = [0u8; 32];
         let mut c_y = [0u8; 32];
-        c_x.copy_from_slice(&data[192..224]);  // Use as-is (LE)
-        c_y.copy_from_slice(&data[224..256]);  // Use as-is (LE)
-        // NO REVERSAL - NEAR uses LE!
+        c_x.copy_from_slice(&data[192..224]);
+        c_y.copy_from_slice(&data[224..256]);
 
         env::log_str(&format!("C.x (LE): {}", hex::encode(&c_x[..8])));
 
@@ -736,10 +735,10 @@ impl ZkVerifier {
         Groth16Proof {
             a: G1Point { x: a_x, y: a_y },
             b: G2Point {
-                x_c0: b_x_c0, // LITTLE-ENDIAN: real component
-                x_c1: b_x_c1, // LITTLE-ENDIAN: imaginary component
-                y_c0: b_y_c0, // LITTLE-ENDIAN: real component
-                y_c1: b_y_c1, // LITTLE-ENDIAN: imaginary component
+                x_c0: b_x_c0, // SWAPPED: contains receipt's x_c1 (imaginary)
+                x_c1: b_x_c1, // SWAPPED: contains receipt's x_c0 (real)
+                y_c0: b_y_c0, // SWAPPED: contains receipt's y_c1 (imaginary)
+                y_c1: b_y_c1, // SWAPPED: contains receipt's y_c0 (real)
             },
             c: G1Point { x: c_x, y: c_y },
         }

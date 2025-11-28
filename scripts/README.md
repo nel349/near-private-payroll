@@ -1,6 +1,6 @@
-# Verification Key Registration
+# Scripts Directory
 
-This directory contains the RISC Zero Groth16 verification key and registration script for the NEAR Private Payroll ZK Verifier contract.
+This directory contains utilities for RISC Zero proof generation, verification key registration, and testing for the NEAR Private Payroll ZK Verifier contract.
 
 ## Overview
 
@@ -13,12 +13,57 @@ RISC Zero uses a **single universal verification key** for all proof types. This
 
 ## Files
 
+### Proof Generation
+- `start_proof_server.sh` - Start the RISC Zero proof server
+- `generate_test_proof.sh` - Generate a test proof and save to file
+- `test_proofs/` - Directory for generated test proofs
+
+### Verification Key & Registration
 - `risc0_vk.json` - RISC Zero's universal Groth16 verification key in NEAR format
 - `register_vk.sh` - Script to register the VK on-chain for all proof types
 - `register_image_ids.sh` - Helper script to register circuit image IDs
 - `build-circuits.sh` - Build all RISC Zero circuits to ELF binaries
 - `format_vk_for_near.rs` - Test utility in proof-server to generate the VK JSON
 - `compute_image_ids.rs` - Test utility in proof-server to compute circuit image IDs
+
+## Quick Start: Generate a Proof
+
+### 1. Start the Proof Server
+
+```bash
+# Development mode
+./scripts/start_proof_server.sh
+
+# Or production mode (faster)
+./scripts/start_proof_server.sh --release
+```
+
+The server will start at `http://localhost:3000`
+
+### 2. Generate a Test Proof
+
+```bash
+# Generate an income threshold proof (default)
+./scripts/generate_test_proof.sh
+
+# Generate a specific proof type
+./scripts/generate_test_proof.sh income_range
+
+# Specify output file
+./scripts/generate_test_proof.sh income_threshold ./my_proof.json
+```
+
+**Supported proof types:**
+- `income_threshold` - Prove income meets a minimum threshold
+- `income_range` - Prove income is within a range
+- `average_income` - Prove average income meets threshold
+- `credit_score` - Prove credit score meets threshold
+
+The script will:
+- Check if the proof server is running
+- Generate a proof (~1-2 minutes for STARK + Groth16)
+- Save the proof to `scripts/test_proofs/{proof_type}.json`
+- Display proof details and structure
 
 ## Generating the Verification Key
 
