@@ -709,18 +709,18 @@ impl ZkVerifier {
 
         // Parse B (G2 point)
         // Receipt format: x_c0 || x_c1 || y_c0 || y_c1 (each 32 bytes, little-endian)
-        // NEAR expects: SWAPPED components (c1 in c0 position, c0 in c1 position)
+        // RISC Zero seal is ALREADY in NEAR format [c0, c1, c0, c1] - NO SWAP NEEDED!
         let mut b_x_c0 = [0u8; 32];
         let mut b_x_c1 = [0u8; 32];
         let mut b_y_c0 = [0u8; 32];
         let mut b_y_c1 = [0u8; 32];
 
-        b_x_c0.copy_from_slice(&data[96..128]);   // SWAP: read receipt's x_c1 into x_c0
-        b_x_c1.copy_from_slice(&data[64..96]);    // SWAP: read receipt's x_c0 into x_c1
-        b_y_c0.copy_from_slice(&data[160..192]);  // SWAP: read receipt's y_c1 into y_c0
-        b_y_c1.copy_from_slice(&data[128..160]);  // SWAP: read receipt's y_c0 into y_c1
+        b_x_c0.copy_from_slice(&data[64..96]);    // Read x_c0 (imaginary) directly
+        b_x_c1.copy_from_slice(&data[96..128]);   // Read x_c1 (real) directly
+        b_y_c0.copy_from_slice(&data[128..160]);  // Read y_c0 (imaginary) directly
+        b_y_c1.copy_from_slice(&data[160..192]);  // Read y_c1 (real) directly
 
-        env::log_str(&format!("B.x_c0 (LE, swapped): {}", hex::encode(&b_x_c0[..8])));
+        env::log_str(&format!("B.x_c0 (LE): {}", hex::encode(&b_x_c0[..8])));
 
         // Parse C (G1 point) - little-endian, no reversal
         let mut c_x = [0u8; 32];
@@ -735,10 +735,10 @@ impl ZkVerifier {
         Groth16Proof {
             a: G1Point { x: a_x, y: a_y },
             b: G2Point {
-                x_c0: b_x_c0, // SWAPPED: contains receipt's x_c1 (imaginary)
-                x_c1: b_x_c1, // SWAPPED: contains receipt's x_c0 (real)
-                y_c0: b_y_c0, // SWAPPED: contains receipt's y_c1 (imaginary)
-                y_c1: b_y_c1, // SWAPPED: contains receipt's y_c0 (real)
+                x_c0: b_x_c0, // Contains x_c0 (imaginary component)
+                x_c1: b_x_c1, // Contains x_c1 (real component)
+                y_c0: b_y_c0, // Contains y_c0 (imaginary component)
+                y_c1: b_y_c1, // Contains y_c1 (real component)
             },
             c: G1Point { x: c_x, y: c_y },
         }
@@ -814,35 +814,33 @@ impl ZkVerifier {
     /// 2. Take low 128 bits and high 128 bits
     /// 3. Return as little-endian 32-byte arrays for BN254
     fn split_digest(&self, digest: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
-        // Match Solidity's splitDigest behavior:
-        // 1. Reverse the full digest (uint256 reversed = reverseByteOrderUint256(uint256(digest)))
-        // 2. Split into low/high 128-bit halves
-        // 3. Each half is interpreted as big-endian in Solidity (bytes16 -> uint128 -> uint256)
-        // 4. But NEAR interprets [u8; 32] as little-endian, so we need to reverse each half again!
+        // Match RISC Zero's Solidity splitDigest() exactly
+        // See: RiscZeroGroth16Verifier.sol lines 139-142
+        //
+        // Solidity code:
+        //   uint256 reversed = reverseByteOrderUint256(uint256(digest));
+        //   return (bytes16(uint128(reversed)), bytes16(uint128(reversed >> 128)));
+        //
+        // Key insight: Solidity's bytes16 → uint128 → uint256 produces big-endian.
+        // NEAR expects little-endian field elements.
+        // BUT: NEAR's alt_bn128 precompile handles the endianness conversion internally!
+        // So we should NOT double-reverse. Just reverse once and split.
 
         let mut reversed = *digest;
-        reversed.reverse(); // Full digest reversed
+        reversed.reverse(); // reverseByteOrderUint256
 
-        // Extract and reverse each 128-bit half to match Solidity's big-endian interpretation
-        let mut low_128 = [0u8; 32];
-        let mut high_128 = [0u8; 32];
+        let mut claim0 = [0u8; 32];
+        let mut claim1 = [0u8; 32];
 
-        // IMPORTANT: After reversing, the LAST 16 bytes are the low 128 bits,
-        // and the FIRST 16 bytes are the high 128 bits (when interpreted as a number)
+        // In big-endian uint256 representation of 'reversed':
+        //   - uint128(reversed) = bytes[16..31] (lower 128 bits)
+        //   - uint128(reversed >> 128) = bytes[0..15] (upper 128 bits)
+        //
+        // Copy these directly (no second reverse needed!)
+        claim0[..16].copy_from_slice(&reversed[16..]);  // Lower 128 bits
+        claim1[..16].copy_from_slice(&reversed[..16]);  // Upper 128 bits
 
-        // Copy the low 128 bits (LAST 16 bytes of reversed), then reverse them
-        let mut low_bytes = [0u8; 16];
-        low_bytes.copy_from_slice(&reversed[16..]);  // Last 16 = low 128 bits
-        low_bytes.reverse(); // Now matches Solidity's big-endian uint128
-        low_128[..16].copy_from_slice(&low_bytes);
-
-        // Copy the high 128 bits (FIRST 16 bytes of reversed), then reverse them
-        let mut high_bytes = [0u8; 16];
-        high_bytes.copy_from_slice(&reversed[..16]);  // First 16 = high 128 bits
-        high_bytes.reverse(); // Now matches Solidity's big-endian uint128
-        high_128[..16].copy_from_slice(&high_bytes);
-
-        (low_128, high_128)
+        (claim0, claim1)
     }
 
     /// Get RISC Zero's universal Groth16 verification key

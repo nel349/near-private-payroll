@@ -42,9 +42,10 @@ pub fn parse_risc_zero_seal(seal_bytes: &[u8]) -> Result<Groth16Proof, String> {
         .map_err(|e| format!("Failed to deserialize RISC Zero seal: {}", e))?;
 
     // Helper to convert Vec<u8> to [u8; 32]
-    // NOTE: RISC Zero's Groth16 seal is encoded in BIG-ENDIAN format (confirmed in risc0-groth16 source).
-    // NEAR's alt_bn128 precompiles expect LITTLE-ENDIAN format.
-    // Therefore, we MUST reverse the bytes.
+    // IMPORTANT: RISC Zero's Groth16 seal is ALREADY in LITTLE-ENDIAN format!
+    // NEAR's alt_bn128 precompiles also expect LITTLE-ENDIAN format.
+    // Therefore, NO byte reversal is needed - just copy directly.
+    // (Verified by curve point validation in scripts/verify_proof_endianness.py)
     let to_array = |vec: &Vec<u8>| -> Result<[u8; 32], String> {
         if vec.len() != 32 {
             return Err(format!("Expected 32 bytes, got {}", vec.len()));
@@ -52,7 +53,7 @@ pub fn parse_risc_zero_seal(seal_bytes: &[u8]) -> Result<Groth16Proof, String> {
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&vec);
 
-        arr.reverse(); // Convert from big-endian to little-endian
+        // No reversal needed - RISC Zero already uses little-endian!
 
         Ok(arr)
     };
@@ -71,25 +72,28 @@ pub fn parse_risc_zero_seal(seal_bytes: &[u8]) -> Result<Groth16Proof, String> {
     };
 
     // Parse G2 point B
+    // IMPORTANT: RISC Zero stores G2 points in Ethereum/Solidity format: [[c1, c0], [c1, c0]]
+    // But NEAR expects: [c0, c1, c0, c1]
+    // So we must SWAP the indices when reading!
     if seal.b.len() != 2 {
         return Err(format!("Invalid G2 point B: expected 2 Fp2 elements, got {}", seal.b.len()));
     }
     if seal.b[0].len() != 2 || seal.b[1].len() != 2 {
         return Err("Invalid G2 point B: Fp2 elements must have 2 components each".to_string());
     }
-    env::log_str("Parsing B.x_c0:");
-    let b_x_c0 = to_array(&seal.b[0][0])?;
-    env::log_str("Parsing B.x_c1:");
-    let b_x_c1 = to_array(&seal.b[0][1])?;
-    env::log_str("Parsing B.y_c0:");
-    let b_y_c0 = to_array(&seal.b[1][0])?;
-    env::log_str("Parsing B.y_c1:");
-    let b_y_c1 = to_array(&seal.b[1][1])?;
+    env::log_str("Parsing B.x_c0 (from seal.b[0][1]):");
+    let b_x_c0 = to_array(&seal.b[0][1])?;  // seal.b[0][1] = c0 (imaginary)
+    env::log_str("Parsing B.x_c1 (from seal.b[0][0]):");
+    let b_x_c1 = to_array(&seal.b[0][0])?;  // seal.b[0][0] = c1 (real)
+    env::log_str("Parsing B.y_c0 (from seal.b[1][1]):");
+    let b_y_c0 = to_array(&seal.b[1][1])?;  // seal.b[1][1] = c0 (imaginary)
+    env::log_str("Parsing B.y_c1 (from seal.b[1][0]):");
+    let b_y_c1 = to_array(&seal.b[1][0])?;  // seal.b[1][0] = c1 (real)
     let b = G2Point {
-        x_c0: b_x_c0,
-        x_c1: b_x_c1,
-        y_c0: b_y_c0,
-        y_c1: b_y_c1,
+        x_c0: b_x_c0,  // Now correctly contains imaginary component
+        x_c1: b_x_c1,  // Now correctly contains real component
+        y_c0: b_y_c0,  // Now correctly contains imaginary component
+        y_c1: b_y_c1,  // Now correctly contains real component
     };
 
     // Parse G1 point C
@@ -158,45 +162,46 @@ pub fn verify_groth16(
     pairing_input.extend_from_slice(&proof.a.x);
     pairing_input.extend_from_slice(&proof.a.y);
     // NO sign byte for pairing check
-    // G2 points: Standard Fq2 encoding (c0, c1) = (real, imaginary)
+    // G2 points: c0 = imaginary, c1 = real (SAME format as VK G2)
     // NEAR expects: x_c0 || x_c1 || y_c0 || y_c1
-    pairing_input.extend_from_slice(&proof.b.x_c0); // x_real FIRST
-    pairing_input.extend_from_slice(&proof.b.x_c1); // x_imaginary
-    pairing_input.extend_from_slice(&proof.b.y_c0); // y_real
-    pairing_input.extend_from_slice(&proof.b.y_c1); // y_imaginary
+    pairing_input.extend_from_slice(&proof.b.x_c0); // x_imaginary FIRST
+    pairing_input.extend_from_slice(&proof.b.x_c1); // x_real
+    pairing_input.extend_from_slice(&proof.b.y_c0); // y_imaginary
+    pairing_input.extend_from_slice(&proof.b.y_c1); // y_real
 
     // Pair 2: e(-α, β) = e(negate(α), β)
     let neg_alpha = negate_g1(&vk.alpha_g1)?;
     pairing_input.extend_from_slice(&neg_alpha.x);
     pairing_input.extend_from_slice(&neg_alpha.y);
     // NO sign byte for pairing check
-    // G2 points: Standard Fq2 encoding (c0, c1) = (real, imaginary)
-    pairing_input.extend_from_slice(&vk.beta_g2.x_c0); // x_real FIRST
-    pairing_input.extend_from_slice(&vk.beta_g2.x_c1); // x_imaginary
-    pairing_input.extend_from_slice(&vk.beta_g2.y_c0); // y_real
-    pairing_input.extend_from_slice(&vk.beta_g2.y_c1); // y_imaginary
+    // G2 points: c0 = imaginary, c1 = real, serialized as c0||c1
+    pairing_input.extend_from_slice(&vk.beta_g2.x_c0); // x_imaginary FIRST
+    pairing_input.extend_from_slice(&vk.beta_g2.x_c1); // x_real
+    pairing_input.extend_from_slice(&vk.beta_g2.y_c0); // y_imaginary
+    pairing_input.extend_from_slice(&vk.beta_g2.y_c1); // y_real
 
-    // Pair 3: e(-C, δ) = e(negate(C), δ)
-    let neg_c = negate_g1(&proof.c)?;
-    pairing_input.extend_from_slice(&neg_c.x);
-    pairing_input.extend_from_slice(&neg_c.y);
-    // NO sign byte for pairing check
-    // G2 points: Standard Fq2 encoding (c0, c1) = (real, imaginary)
-    pairing_input.extend_from_slice(&vk.delta_g2.x_c0); // x_real FIRST
-    pairing_input.extend_from_slice(&vk.delta_g2.x_c1); // x_imaginary
-    pairing_input.extend_from_slice(&vk.delta_g2.y_c0); // y_real
-    pairing_input.extend_from_slice(&vk.delta_g2.y_c1); // y_imaginary
-
-    // Pair 4: e(-vk_ic, γ) = e(negate(vk_ic), γ)
+    // Pair 3: e(-vk_ic, γ) = e(negate(vk_ic), γ)
+    // IMPORTANT: This must be BEFORE pair 4 to match Groth16 equation order
     let neg_vk_ic = negate_g1(&vk_ic)?;
     pairing_input.extend_from_slice(&neg_vk_ic.x);
     pairing_input.extend_from_slice(&neg_vk_ic.y);
     // NO sign byte for pairing check
-    // G2 points: Standard Fq2 encoding (c0, c1) = (real, imaginary)
-    pairing_input.extend_from_slice(&vk.gamma_g2.x_c0); // x_real FIRST
-    pairing_input.extend_from_slice(&vk.gamma_g2.x_c1); // x_imaginary
-    pairing_input.extend_from_slice(&vk.gamma_g2.y_c0); // y_real
-    pairing_input.extend_from_slice(&vk.gamma_g2.y_c1); // y_imaginary
+    // G2 points: c0 = imaginary, c1 = real, serialized as c0||c1
+    pairing_input.extend_from_slice(&vk.gamma_g2.x_c0); // x_imaginary FIRST
+    pairing_input.extend_from_slice(&vk.gamma_g2.x_c1); // x_real
+    pairing_input.extend_from_slice(&vk.gamma_g2.y_c0); // y_imaginary
+    pairing_input.extend_from_slice(&vk.gamma_g2.y_c1); // y_real
+
+    // Pair 4: e(-C, δ) = e(negate(C), δ)
+    let neg_c = negate_g1(&proof.c)?;
+    pairing_input.extend_from_slice(&neg_c.x);
+    pairing_input.extend_from_slice(&neg_c.y);
+    // NO sign byte for pairing check
+    // G2 points: c0 = imaginary, c1 = real, serialized as c0||c1
+    pairing_input.extend_from_slice(&vk.delta_g2.x_c0); // x_imaginary FIRST
+    pairing_input.extend_from_slice(&vk.delta_g2.x_c1); // x_real
+    pairing_input.extend_from_slice(&vk.delta_g2.y_c0); // y_imaginary
+    pairing_input.extend_from_slice(&vk.delta_g2.y_c1); // y_real
 
     // 3. Call NEAR's alt_bn128_pairing_check precompile
     // Returns true if the pairing equation holds

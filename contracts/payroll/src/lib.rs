@@ -393,6 +393,10 @@ impl PayrollContract {
 
     /// Company deposits wZEC for payroll
     /// Called via ft_transfer_call from wZEC contract
+    ///
+    /// Accepts deposits from:
+    /// - Owner (direct deposit)
+    /// - Intents adapter (cross-chain deposits forwarded from companies)
     pub fn ft_on_transfer(
         &mut self,
         sender_id: AccountId,
@@ -402,12 +406,24 @@ impl PayrollContract {
         let token_contract = env::predecessor_account_id();
         assert_eq!(token_contract, self.wzec_token, "Only wZEC accepted");
 
-        if msg == "deposit" && sender_id == self.owner {
+        // Accept deposits from owner or intents adapter
+        let is_valid_sender = sender_id == self.owner
+            || self.intents_adapter.as_ref().map_or(false, |adapter| &sender_id == adapter);
+
+        if msg == "deposit" && is_valid_sender {
             self.company_balance += amount.0;
-            env::log_str(&format!("Company deposited {} wZEC", amount.0));
+            env::log_str(&format!(
+                "Company deposited {} wZEC (via {})",
+                amount.0,
+                sender_id
+            ));
             PromiseOrValue::Value(U128(0)) // Accept all tokens
         } else {
             // Refund if not a valid deposit
+            env::log_str(&format!(
+                "Deposit rejected: sender={}, msg='{}', valid_sender={}",
+                sender_id, msg, is_valid_sender
+            ));
             PromiseOrValue::Value(amount)
         }
     }
