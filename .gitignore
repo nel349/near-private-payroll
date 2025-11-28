@@ -37,3 +37,5 @@ risc0-build/
 # Test outputs
 coverage/
 .nyc_output/
+ethereum-test/lib/*
+ethereum-test/out/*
