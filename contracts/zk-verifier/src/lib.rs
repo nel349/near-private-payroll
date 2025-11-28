@@ -1175,15 +1175,15 @@ impl ZkVerifier {
         buffer.extend_from_slice(&g1.x);
         buffer.extend_from_slice(&g1.y);
 
-        // TEST: SWAP VK G2 POINTS during pairing serialization
-        // Proof B is parsed with SWAP (c1 data in c0 field, c0 data in c1 field)
-        // So when serialized: sends c1 || c0 order to NEAR
-        // VK G2 points need to match this format
-        // G2: x_c1 || x_c0 || y_c1 || y_c0 (SWAPPED order)
-        buffer.extend_from_slice(&g2.x_c1);  // SWAP: imaginary FIRST
-        buffer.extend_from_slice(&g2.x_c0);  // SWAP: real SECOND
-        buffer.extend_from_slice(&g2.y_c1);  // SWAP: imaginary FIRST
-        buffer.extend_from_slice(&g2.y_c0);  // SWAP: real SECOND
+        // G2: x_c0 || x_c1 || y_c0 || y_c1 (128 bytes)
+        // NO SWAP: Use fields as-is
+        // Proof B is already parsed with SWAP, so its c0 field contains c1 data
+        // VK G2 points are stored in normal c0,c1 order
+        // When serialized, both end up in the format NEAR expects
+        buffer.extend_from_slice(&g2.x_c0);  // Proof B: contains c1 data | VK: contains c0 data
+        buffer.extend_from_slice(&g2.x_c1);  // Proof B: contains c0 data | VK: contains c1 data
+        buffer.extend_from_slice(&g2.y_c0);  // Proof B: contains c1 data | VK: contains c0 data
+        buffer.extend_from_slice(&g2.y_c1);  // Proof B: contains c0 data | VK: contains c1 data
     }
 
     fn record_verification(
