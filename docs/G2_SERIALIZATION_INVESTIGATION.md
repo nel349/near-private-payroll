@@ -612,5 +612,540 @@ According to Section 8's investigation plan, with VK constants confirmed correct
 - ✅ VK constants verified correct (Section 8, Step 1 COMPLETE)
 - ✅ G2 serialization format verified correct (Section 7 COMPLETE)
 - ✅ Custom receipt format verified correct (Section 9 COMPLETE)
-- ⏳ **NEXT**: Investigate public input computation (Section 8, Step 2)
-- ⏳ **THEN**: Test pairing pair ordering/negation (Section 8, Step 3)
+- ✅ Public input constants verified (Section 11, Part 1 COMPLETE)
+- ✅ split_digest() fixed (Section 11, Part 2 COMPLETE)
+- ✅ Pairing pair order fixed (Section 11, Part 3 COMPLETE)
+- ❌ **CURRENT**: Pairing still returns FALSE - need systematic investigation (Section 11, Part 4)
+
+---
+
+## 11. Public Input Investigation & Fixes - NOVEMBER 28, 2025
+
+**OBJECTIVE:** Systematically verify public input computation (Section 8, Step 2) and pairing construction
+
+### Part 1: Public Input Constants Verification
+
+**Created verification scripts:**
+- `scripts/verify_public_input_constants.py` - Verifies CONTROL_ROOT and BN254_CONTROL_ID
+- `scripts/test_split_digest.py` - Tests different split_digest() implementations
+
+**Findings:**
+1. ✅ **CONTROL_ROOT** matches RISC Zero exactly: `a54dc85ac99f851c92d7c96d7318af41dbe7c0194edfcc37eb4d422a998c1f56`
+2. ✅ **BN254_CONTROL_ID** correctly reduced mod Fr:
+   - Original: `c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404`
+   - Reduced: `2f4d79bbb8a7d40e3810c50b21839bc61b2b9ae1b96b0b00b4452017966e4401`
+3. ✅ Both constants are correctly stored in `contracts/zk-verifier/src/lib.rs`
+
+### Part 2: split_digest() Bug Discovery and Fix
+
+**Problem:** The `split_digest()` function had incorrect double-reverse logic.
+
+**RISC Zero's Solidity Implementation (RiscZeroGroth16Verifier.sol:139-142):**
+```solidity
+function splitDigest(bytes32 digest) internal pure returns (bytes16, bytes16) {
+    uint256 reversed = reverseByteOrderUint256(uint256(digest));
+    return (bytes16(uint128(reversed)), bytes16(uint128(reversed >> 128)));
+}
+```
+
+**Initial Bug:**
+Our implementation reversed the entire digest, then reversed each 16-byte half again. This double-reverse canceled itself out, producing the ORIGINAL unreversed bytes!
+
+**Test Results Before Fix:**
+```
+control_a0: a54dc85ac99f851c92d7c96d7318af4100000000000000000000000000000000
+control_a1: dbe7c0194edfcc37eb4d422a998c1f5600000000000000000000000000000000
+```
+These are WRONG - they're the original bytes, not the processed values.
+
+**Correct Implementation:**
+```rust
+fn split_digest(&self, digest: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    let mut reversed = *digest;
+    reversed.reverse(); // reverseByteOrderUint256
+
+    let mut claim0 = [0u8; 32];
+    let mut claim1 = [0u8; 32];
+
+    // Just copy the halves - no second reverse needed!
+    claim0[..16].copy_from_slice(&reversed[16..]);  // Lower 128 bits
+    claim1[..16].copy_from_slice(&reversed[..16]);  // Upper 128 bits
+
+    (claim0, claim1)
+}
+```
+
+**Test Results After Fix:**
+```
+control_a0: 41af18736dc9d7921c859fc95ac84da500000000000000000000000000000000
+control_a1: 561f8c992a424deb37ccdf4e19c0e7db00000000000000000000000000000000
+claim_c0:   0d2d552d7b8a8d3c19768dae7f0638b900000000000000000000000000000000
+claim_c1:   e2f674cda4492e4ddb67ea31f49b283100000000000000000000000000000000
+```
+✅ These now match the expected values from RISC Zero's Solidity implementation!
+
+**File Modified:** `contracts/zk-verifier/src/lib.rs` (lines 816-844)
+
+### Part 3: Pairing Pair Order Bug Discovery and Fix
+
+**Problem:** Pairing pairs were in the wrong order!
+
+**Groth16 Verification Equation:**
+```
+e(A, B) = e(α, β) · e(vk_ic, γ) · e(C, δ)
+```
+
+**Rearranged for Pairing Check:**
+```
+e(A, B) · e(-α, β) · e(-vk_ic, γ) · e(-C, δ) = 1
+```
+
+**Correct Pair Order:**
+1. (A, B)
+2. (-α, β)
+3. (-vk_ic, γ)  ← This was in position 4!
+4. (-C, δ)      ← This was in position 3!
+
+**Bug:** Our implementation had pairs 3 and 4 SWAPPED.
+
+**Fix Applied:** Reordered pairs in `contracts/zk-verifier/src/groth16.rs` (lines 179-200)
+
+**File Modified:** `contracts/zk-verifier/src/groth16.rs`
+
+### Part 4: Current Status - Pairing Still Fails
+
+**After all fixes:**
+- ✅ Public inputs compute correctly
+- ✅ VK constants verified correct
+- ✅ Pairing pair order correct
+- ✅ G2 serialization verified (c0 = imaginary, c1 = real)
+- ❌ **Pairing check still returns FALSE**
+
+**Test Output:**
+```
+vk_ic computed: x=ceb365d2ef310957, y=7c74a1a8dd77a51a
+=== PAIRING RESULT: false ===
+```
+
+**Remaining Possible Causes:**
+1. **Proof Point Parsing** - Are A, B, C being parsed correctly from RISC Zero's seal?
+2. **G1 Point Negation** - Is `negate_g1()` working correctly?
+3. **Proof/VK Mismatch** - Does the proof actually match the VK we're using?
+4. **Unknown Serialization Issue** - Something else we haven't discovered yet
+
+**Next Investigation Steps:**
+1. ✅ Verify proof points (A, B, C) are parsed correctly from RISC Zero seal
+2. Test G1 negation function with known values
+3. Compare our pairing input byte-for-byte with what Ethereum would produce
+4. Consider testing with a minimal known-good proof/VK pair
+
+## Section 12: CRITICAL - Proof Point Byte-Order Bug Discovery
+
+**Date:** 2025-11-27
+**Investigation Step:** Part 4, Step 1 - Verify proof point parsing
+
+### Discovery Process
+
+Created two Python scripts to analyze the test proof:
+1. `scripts/parse_test_proof.py` - Parse RISC Zero receipt structure
+2. `scripts/verify_proof_endianness.py` - Test if proof points are valid BN254 curve points
+
+### Receipt Structure Found
+
+The RISC Zero receipt (464 bytes) contains:
+```
+[image_id (32 bytes)] [claim_digest (32 bytes)] [seal (400 bytes)]
+```
+
+The seal (400 bytes) contains:
+```
+[A.x (32)] [A.y (32)] [B.x.c0 (32)] [B.x.c1 (32)] [B.y.c0 (32)] [B.y.c1 (32)] [C.x (32)] [C.y (32)] [extra 144 bytes]
+```
+
+Note: The extra 144 bytes contain public inputs (threshold, meets_threshold, payment_count, history_commitment), but bincode deserialization ignores them since they're not in the `RiscZeroSeal` struct.
+
+### Critical Byte-Order Test
+
+Tested if proof points A and C are valid BN254 G1 curve points (y² = x³ + 3):
+
+**As BIG-ENDIAN (our assumption):**
+```python
+A.x = 67863071904136782497147562999268130560723770133337919638920521867119676875823
+A.y = 38192664026095268221767567942890953394877926336188463427419444548077400395049
+On curve? FALSE ❌
+
+C.x = 14067115759537362434088195304129929881481838298892431516839961068996479214872
+C.y = 44563335507651942121684461666287897512039272549918582258445991042973535128875
+On curve? FALSE ❌
+```
+
+**As LITTLE-ENDIAN (actual encoding):**
+```python
+A.x = 21662286125144040480705439577553282157116086640425299388509947709340617214358
+A.y = 18794979594596773162485706057074905961111298111500218146060710963184937758804
+On curve? TRUE ✅
+
+C.x = 11260146055042736672652331314399409757723721033961203584685373580799416473887
+C.y = 19586893598842393327164303226847335268694305940870834197196332800423541114210
+On curve? TRUE ✅
+```
+
+### ROOT CAUSE IDENTIFIED
+
+**❌ WRONG ASSUMPTION in `groth16.rs:45-47`:**
+```rust
+// NOTE: RISC Zero's Groth16 seal is encoded in BIG-ENDIAN format (confirmed in risc0-groth16 source).
+// NEAR's alt_bn128 precompiles expect LITTLE-ENDIAN format.
+// Therefore, we MUST reverse the bytes.
+```
+
+**✅ REALITY:**
+- RISC Zero's seal is ALREADY LITTLE-ENDIAN
+- NEAR's alt_bn128 expects LITTLE-ENDIAN
+- Our byte reversal (line 55: `arr.reverse()`) converts valid little-endian points to INVALID big-endian points
+- This causes the pairing check to fail because we're passing OFF-CURVE points!
+
+### Why This Causes Failure
+
+When we reverse the bytes:
+1. RISC Zero provides: Valid little-endian curve points
+2. We reverse: Create invalid big-endian (off-curve) points
+3. NEAR's pairing check: Fails because points are not on the curve
+
+### The Fix
+
+**Remove the byte reversal in `groth16.rs`:**
+
+```rust
+// OLD (WRONG):
+let to_array = |vec: &Vec<u8>| -> Result<[u8; 32], String> {
+    if vec.len() != 32 {
+        return Err(format!("Expected 32 bytes, got {}", vec.len()));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&vec);
+    arr.reverse(); // ❌ WRONG - converts valid LE to invalid BE
+    Ok(arr)
+};
+
+// NEW (CORRECT):
+let to_array = |vec: &Vec<u8>| -> Result<[u8; 32], String> {
+    if vec.len() != 32 {
+        return Err(format!("Expected 32 bytes, got {}", vec.len()));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&vec);
+    // No reversal needed - RISC Zero already uses little-endian!
+    Ok(arr)
+};
+```
+
+### Expected Impact
+
+After removing the byte reversal:
+- ✅ Proof points A, B, C will be valid BN254 curve points
+- ✅ NEAR's pairing check will receive correct inputs
+- ✅ Verification should SUCCEED (if no other bugs remain)
+
+### Files to Modify
+
+1. `contracts/zk-verifier/src/groth16.rs` - Remove byte reversal in `to_array` helper (line 55)
+
+### Test Result After Byte-Order Fix
+
+✅ Byte reversal removed successfully
+❌ **Pairing check still returns FALSE**
+
+```
+Proof B.x: c0=ece3b71e3585bdc1, c1=7a77b565ede54381
+```
+
+### SECOND BUG DISCOVERED: G2 Component Order
+
+**Problem:** RISC Zero stores G2 in Ethereum/Solidity format, not NEAR format!
+
+**Ethereum/Solidity G2 Format:**
+```solidity
+[[uint256 x_c1, uint256 x_c0], [uint256 y_c1, uint256 y_c0]]  // [real, imaginary]
+```
+
+**NEAR G2 Format:**
+```
+[x_c0, x_c1, y_c0, y_c1]  // [imaginary, real, imaginary, real]
+```
+
+**What RISC Zero Seal Contains:**
+- `seal.b[0][0]` = x.c1 (real) - ece3b71e...
+- `seal.b[0][1]` = x.c0 (imaginary) - 7a77b565...
+- `seal.b[1][0]` = y.c1 (real)
+- `seal.b[1][1]` = y.c0 (imaginary)
+
+**What Our Code Currently Does (WRONG):**
+```rust
+let b_x_c0 = to_array(&seal.b[0][0])?;  // Gets c1 (real) into c0 - SWAPPED!
+let b_x_c1 = to_array(&seal.b[0][1])?;  // Gets c0 (imaginary) into c1 - SWAPPED!
+```
+
+**Correct Implementation:**
+```rust
+let b_x_c0 = to_array(&seal.b[0][1])?;  // Get c0 (imaginary) from [0][1]
+let b_x_c1 = to_array(&seal.b[0][0])?;  // Get c1 (real) from [0][0]
+let b_y_c0 = to_array(&seal.b[1][1])?;  // Get c0 (imaginary) from [1][1]
+let b_y_c1 = to_array(&seal.b[1][0])?;  // Get c1 (real) from [1][0]
+```
+
+We need to **swap the indices** when reading from the seal!
+
+### CRITICAL UPDATE: lib.rs Also Has a Parser!
+
+After applying the groth16.rs fix, tests still failed. Investigation revealed a **SECOND parser** in `lib.rs:697` called `parse_groth16_proof()` that parses proofs directly from raw bytes (not using bincode).
+
+**The lib.rs parser was doing a BACKWARDS SWAP:**
+```rust
+// WRONG - Was swapping incorrectly:
+b_x_c0.copy_from_slice(&data[96..128]);   // Reading x_c1 into x_c0
+b_x_c1.copy_from_slice(&data[64..96]);    // Reading x_c0 into x_c1
+```
+
+**Analysis of raw byte positions:**
+- Bytes 64-96 = x.c0 (imaginary) = 7a77b565...
+- Bytes 96-128 = x.c1 (real) = ece3b71e...
+
+The bytes are ALREADY in NEAR format [c0, c1, c0, c1]! The swap was **inverting** them.
+
+**Correct implementation (NO SWAP):**
+```rust
+b_x_c0.copy_from_slice(&data[64..96]);    // Read x_c0 (imaginary) directly
+b_x_c1.copy_from_slice(&data[96..128]);   // Read x_c1 (real) directly
+b_y_c0.copy_from_slice(&data[128..160]);  // Read y_c0 (imaginary) directly
+b_y_c1.copy_from_slice(&data[160..192]);  // Read y_c1 (real) directly
+```
+
+### Files Modified
+
+1. `contracts/zk-verifier/src/groth16.rs` (lines 44-97):
+   - Removed byte reversal (bug #1)
+   - Swapped G2 component indices for bincode-deserialized seal (bug #2a)
+
+2. `contracts/zk-verifier/src/lib.rs` (lines 710-741):
+   - **REMOVED incorrect swap in raw byte parser (bug #2b)**
+   - Fixed comments to reflect correct component assignment
+
+---
+
+## 12. CORRECTION: G2 Component Swap IS Required (Bug #2b Reverted)
+
+**STATUS:** Section 11 conclusion was INCORRECT. Comprehensive validation proves swap IS needed.
+
+### Problem with Section 11 Analysis
+
+Section 11 concluded that raw bytes were "ALREADY in NEAR format [c0, c1, c0, c1]" and removed the swap. This was based on looking at hex values but **did not validate if the resulting G2 point was mathematically valid** on the BN254 G2 curve.
+
+### Mathematical Validation Approach
+
+Created `scripts/verify_g2_point.py` to test if parsed G2 point B satisfies the curve equation:
+```
+y² = x³ + b (where b = 3/(9+u) in Fp2 arithmetic)
+```
+
+This is the DEFINITIVE test - if the point is not on the curve, NEAR's alt_bn128 precompile will reject it.
+
+### Test Results
+
+**Without swap** (Section 11 approach - reading bytes directly):
+```python
+B_x = Fp2(b_x_c0_int, b_x_c1_int)  # c0=ece3b71e..., c1=7a77b565...
+B_y = Fp2(b_y_c0_int, b_y_c1_int)
+
+lhs = B_y² 
+rhs = B_x³ + b
+
+Result: ❌ NOT on curve! (lhs ≠ rhs)
+```
+
+**With swap** (swapping positions 64-96 ↔ 96-128, 128-160 ↔ 160-192):
+```python
+B_x = Fp2(b_x_c1_int, b_x_c0_int)  # Swapped!
+B_y = Fp2(b_y_c1_int, b_y_c0_int)  # Swapped!
+
+lhs = B_y²
+rhs = B_x³ + b
+
+Result: ✅ ON CURVE! (lhs = rhs)
+```
+
+### Conclusion
+
+The raw bytes in RISC Zero receipt ARE in Ethereum format `[c1, c0, c1, c0]` (real, imaginary order).
+NEAR expects `[c0, c1, c0, c1]` (imaginary, real order).
+Therefore the swap IS required!
+
+###  Corrected Implementation (Bug #2b Fix - SWAP RESTORED)
+
+File: `contracts/zk-verifier/src/lib.rs` (lines 718-721)
+
+```rust
+// Receipt format: x_c1 || x_c0 || y_c1 || y_c0 (Ethereum format: [c1, c0])  
+// NEAR expects: [c0, c1, c0, c1] - SO WE MUST SWAP!
+
+b_x_c0.copy_from_slice(&data[96..128]);   // SWAP: read x_c0 from position 2
+b_x_c1.copy_from_slice(&data[64..96]);    // SWAP: read x_c1 from position 1
+b_y_c0.copy_from_slice(&data[160..192]);  // SWAP: read y_c0 from position 4
+b_y_c1.copy_from_slice(&data[128..160]);  // SWAP: read y_c1 from position 3
+```
+
+### Summary of All Three Bug Fixes
+
+**Bug #1: Incorrect Byte Reversal** (groth16.rs:55)
+- RISC Zero proof points are ALREADY little-endian
+- Removed `arr.reverse()` - points should be used as-is
+- Validated with `scripts/verify_proof_endianness.py`
+
+**Bug #2a: G2 Component Swap in Bincode Parser** (groth16.rs:84-91)
+- RISC Zero bincode seal stores G2 as `[[c1, c0], [c1, c0]]`
+- Need to swap array indices when reading: `seal.b[0][1]` → c0, `seal.b[0][0]` → c1
+
+**Bug #2b: G2 Component Swap in Raw Byte Parser** (lib.rs:718-721)
+- ✅ SWAP IS REQUIRED (Section 11 was wrong!)
+- Raw bytes are in Ethereum format [c1, c0]
+- Must swap positions when parsing
+- Validated with `scripts/verify_g2_point.py` using curve equation
+
+### Current Status
+
+- ✅ All three bugs fixed
+- ✅ G2 point validation passes (no "invalid g2" error)
+- ❌ Pairing check still returns FALSE
+
+Next: Investigate why pairing check fails despite valid proof/VK points.
+
+---
+
+## 13. Public Input Bugs Discovery - NOVEMBER 28, 2025 (Continued)
+
+**OBJECTIVE:** Fix remaining issues causing pairing failure despite correct proof/VK parsing
+
+### Bug #4: Using Hardcoded CONTROL_ROOT Instead of Actual Image ID
+
+**Problem Discovered:**
+The code in `verify_risc_zero_groth16()` was using a hardcoded `CONTROL_ROOT` constant to compute public inputs instead of the actual `image_id` from the receipt.
+
+**Location:** `contracts/zk-verifier/src/lib.rs:773`
+
+**Wrong Code:**
+```rust
+// BUG: Using hardcoded constant instead of actual receipt image_id
+let (control_a0, control_a1) = self.split_digest(&CONTROL_ROOT);
+```
+
+**Impact:**
+- Public inputs 0 and 1 (control_a0, control_a1) were computed with WRONG image_id
+- Expected image_id: `41b4f8f0b0e6b73b23b7184ee3db29ac53ef58552cef3703a08a3a558b0cf6ba`
+- Hardcoded value: `be5e6d3279d5cd05cd84488d0c3f5e3aa0f69a32e44d7e99c25f0d37bb1f1e53`
+- These are completely different values, guaranteed to cause pairing failure
+
+**Fix Applied:**
+```rust
+// contracts/zk-verifier/src/lib.rs
+
+// 1. Add image_id parameter to function (line 758)
+fn verify_risc_zero_groth16(
+    &self,
+    proof: &Groth16Proof,
+    image_id: &[u8; 32],  // ADDED parameter
+    claim_digest: &[u8; 32],
+) -> bool {
+    // ...
+
+    // 2. Use actual image_id instead of hardcoded constant (line 774)
+    let (control_a0, control_a1) = self.split_digest(image_id);  // FIXED
+
+    // ...
+}
+
+// 3. Update call site to pass actual receipt_image_id (line 676)
+let is_valid = self.verify_risc_zero_groth16(&proof, &receipt_image_id, &claim_digest);
+```
+
+**Validation:**
+Created `scripts/verify_public_inputs.py` to verify public input computation matches RISC Zero format:
+```python
+# Expected with actual image_id:
+control_a0: ac29dbe34e18b7233bb7e6b0f0f8b441...
+control_a1: baf60c8b553a8aa00337ef2c5558ef53...
+
+# vs what we were getting with hardcoded CONTROL_ROOT:
+control_a0: 3a5e3f0c8d4884cd05cdd579326d5ebe... (WRONG)
+control_a1: 531e1fbb370d5fc2997e4de4329af6a0... (WRONG)
+```
+
+### Bug #5: Stale WASM Binary (Not a Code Bug!)
+
+**Problem:**
+Integration tests were failing with wrong public input values EVEN AFTER fixing Bug #4. Investigation revealed the tests were loading stale WASM from a previous build.
+
+**Root Cause:**
+- Integration tests load WASM from: `target/near/zk_verifier/zk_verifier.wasm`
+- Standard `cargo build --release --target wasm32-unknown-unknown` outputs to different location
+- Need to use `cargo near build non-reproducible-wasm` to build for tests
+
+**Not a code bug:** The `split_digest()` implementation was always correct. The issue was simply using outdated compiled WASM that still had Bug #4.
+
+**Resolution:**
+Built contract correctly with `cargo near build non-reproducible-wasm`
+
+### Test Results After Both Fixes
+
+**Public Inputs NOW CORRECT ✅:**
+```
+control_a0: ac29dbe34e18b7233bb7e6b0f0f8b441... ✅ MATCHES expected
+control_a1: baf60c8b553a8aa00337ef2c5558ef53... ✅ MATCHES expected
+claim_c0:   0d2d552d7b8a8d3c19768dae7f0638b9... ✅ MATCHES expected
+claim_c1:   e2f674cda4492e4ddb67ea31f49b2831... ✅ MATCHES expected
+bn254_id:   01446e96172045b4000b6bb9e19a2b1b... ✅ MATCHES expected (reversed)
+```
+
+All 5 public inputs now match the RISC Zero Groth16 format exactly (verified byte-for-byte with Python reference implementation).
+
+**Pairing Check Status: ❌ STILL RETURNS FALSE**
+```
+=== PAIRING RESULT: false ===
+VERIFICATION FAILED - pairing check returned false
+```
+
+### Summary of All Bugs Fixed So Far
+
+**Proof Parsing Bugs:**
+- ✅ Bug #1: Incorrect byte reversal (removed `arr.reverse()`)
+- ✅ Bug #2a: G2 component swap in bincode parser (groth16.rs)
+- ✅ Bug #2b: G2 component swap in raw byte parser (lib.rs)
+
+**Public Input Bugs:**
+- ✅ Bug #3: VK constants verified correct (Section 10)
+- ✅ Bug #4: Using hardcoded CONTROL_ROOT instead of actual image_id (FIXED)
+- ✅ Bug #5: Stale WASM (not a code bug - build process issue)
+
+**Verified Correct:**
+- ✅ G2 serialization format (c0=imaginary, c1=real)
+- ✅ VK constants match RISC Zero's verifier.rs exactly
+- ✅ Public input computation matches RISC Zero's Solidity implementation
+- ✅ Pairing pair order correct
+- ✅ All proof points on curve (A, C validated, B on G2 curve)
+
+### Remaining Investigation
+
+**Current Status:**
+Despite ALL serialization, VK, and public input bugs being fixed, pairing check still returns FALSE.
+
+**Possible Remaining Issues:**
+1. **BN254_CONTROL_ID endianness** - We reverse it for little-endian, but this may be wrong
+2. **VK version mismatch** - Contract uses v3.0.3 VK, proof-server uses v3.0
+3. **Proof/VK compatibility** - Test proof may be from different RISC Zero version
+4. **Unknown pairing construction issue** - Something subtle in how we construct pairing inputs
+
+**Next Steps:**
+1. Investigate BN254_CONTROL_ID reversal (is it needed?)
+2. Verify RISC Zero version compatibility
+3. Consider regenerating test proof with current RISC Zero version
+4. Deep-dive into NEAR's alt_bn128 pairing precompile expectations
+

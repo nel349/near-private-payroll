@@ -165,43 +165,60 @@ Created comprehensive E2E tests spanning multiple contracts (payroll + intents-a
 
 ---
 
-### 6. Deployment Script
+### 6. Deployment Scripts
 
-**Status:** 🚧 NOT STARTED
+**Status:** ✅ COMPLETE
 
-Create deployment automation for testnet/mainnet:
+Created automated deployment for testnet with full configuration:
 
-- [ ] Deploy intents-adapter contract
-- [ ] Initialize with owner, payroll, wzec addresses
-- [ ] Configure chain settings (fees, limits)
-- [ ] Add authorized relayers
-- [ ] Add supported tokens
-- [ ] Verify deployment
+- [x] Build script for all contracts (`scripts/build-all.sh`)
+- [x] Testnet deployment script (`scripts/deploy-testnet.sh`)
+- [x] Comprehensive deployment guide (`docs/DEPLOYMENT_GUIDE.md`)
 
-**Recommended File:** `scripts/deploy-intents-adapter.sh` or `scripts/deploy-intents-adapter.js`
+**Features:**
+- Deploys all 4 contracts (wzec, verifier, payroll, intents-adapter)
+- Creates unique subaccounts with timestamps
+- Initializes contracts with proper configuration
+- Sets up relationships between contracts
+- Registers contracts with wZEC token
+- Configures cross-chain settings for Zcash testnet
+- Adds owner as authorized relayer (for testing)
+- Saves deployment info to JSON file
+- Provides complete usage examples
 
-**Dependencies:**
-- NEAR CLI or near-api-js
-- Contract WASM build
-- Configuration file with addresses/settings
+**Key Files:**
+- `scripts/build-all.sh` - Builds all contracts with cargo-near
+- `scripts/deploy-testnet.sh` - Full testnet deployment automation
+- `docs/DEPLOYMENT_GUIDE.md` - Complete deployment and usage guide (700+ lines)
 
----
+**Usage:**
+```bash
+# Build all contracts
+./scripts/build-all.sh
+
+# Deploy to testnet
+./scripts/deploy-testnet.sh your-account.testnet
+```
+
+**Output:** Creates `deployment-testnet-{timestamp}.json` with all contract addresses
 
 ### 7. Demo / Example Script
 
 **Status:** 🚧 NOT STARTED
 
-Create example showing complete cross-chain flows:
+Create example showing complete cross-chain flows using deployed testnet contracts:
 
-- [ ] Initialize all contracts
-- [ ] Company deposits wZEC from "Zcash"
-- [ ] Company adds employee
-- [ ] Company pays employee
-- [ ] Employee withdraws to Zcash shielded address
+- [ ] Company deposits wZEC from "Zcash" (via mint + transfer_call)
+- [ ] Company adds employee to payroll
+- [ ] Company pays employee (Note: requires valid ZK proof)
+- [ ] Employee withdraws to Zcash/NEAR address
 - [ ] Query withdrawal status
 - [ ] Relayer confirms completion
 
-**Recommended File:** `examples/cross-chain-payroll-demo.ts` or `examples/intents-demo.ts`
+**Note:** Most flows are demonstrated in `DEPLOYMENT_GUIDE.md` with NEAR CLI commands.
+For a programmatic example, consider creating `examples/demo-flow.ts` using the SDK.
+
+**Recommendation:** Since deployment guide provides complete CLI examples, this may be optional.
 
 ---
 
@@ -335,12 +352,13 @@ cargo build --target wasm32-unknown-unknown --release
 
 ## Next Steps (Priority Order)
 
-1. **E2E Tests** - Validate complete flows work correctly
-2. **Deployment Script** - Prepare for testnet deployment
-3. **Demo Script** - Create reference implementation
-4. **Testnet Deployment** - Deploy and test on testnet
+1. ✅ ~~E2E Tests~~ - COMPLETE
+2. ✅ ~~Deployment Script~~ - COMPLETE
+3. **Testnet Deployment** - Deploy and test on real testnet
+4. **Zcash Testnet Integration** - Connect to real Zcash testnet
 5. **Relayer Service** - Implement automated bridge confirmations
-6. **Security Audit** - Third-party audit before mainnet
+6. **Demo Script** (Optional) - SDK-based programmatic example
+7. **Security Audit** - Third-party audit before mainnet
 
 ---
 
