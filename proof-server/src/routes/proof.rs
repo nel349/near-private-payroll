@@ -55,7 +55,7 @@ async fn generate_proof(
 
     match result {
         ProofResult::Success {
-            proof,
+            receipt,
             image_id,
             journal,
             generation_time_ms,
@@ -103,7 +103,7 @@ async fn generate_proof(
 
             let response = GenerateProofResponse {
                 request_id: attestation.id.clone(),
-                proof,
+                receipt,
                 image_id,
                 proof_type,
                 public_inputs,

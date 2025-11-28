@@ -273,38 +273,53 @@ impl ProverService {
 
     /// Convert RISC Zero Groth16 seal to fixed 256-byte format for NEAR contract
     ///
-    /// RISC Zero seal format: nested Vec structures for G1 and G2 points
-    /// NEAR contract format: fixed 256 bytes = A (64) || B (128) || C (64)
+    /// RISC Zero seal format: nested Vec structures for G1 and G2 points (BIG-ENDIAN)
+    /// NEAR contract format: fixed 256 bytes = A (64) || B (128) || C (64) (LITTLE-ENDIAN)
     ///
     /// G1 point: x (32 bytes) || y (32 bytes) = 64 bytes
     /// G2 point: x_c0 (32) || x_c1 (32) || y_c0 (32) || y_c1 (32) = 128 bytes
+    ///
+    /// **CRITICAL**: RISC Zero uses BIG-ENDIAN, NEAR's alt_bn128 is EIP-197 compatible (BIG-ENDIAN)
+    /// No byte reversal needed - both systems use big-endian encoding.
     fn convert_seal_to_fixed_format(seal: &risc0_groth16::Seal) -> Result<Vec<u8>, ProverError> {
         let mut result = Vec::with_capacity(256);
 
-        // Helper to convert Vec<u8> to fixed array and extend result
-        let mut extend_bytes = |vec: &Vec<u8>, expected_len: usize| -> Result<(), ProverError> {
+        // Helper function to reverse and add bytes
+        let add_reversed = |res: &mut Vec<u8>, vec: &Vec<u8>, expected_len: usize| -> Result<(), ProverError> {
             if vec.len() != expected_len {
                 return Err(ProverError::SerializationError(format!(
-                    "Expected {} bytes, got {}",
-                    expected_len,
-                    vec.len()
+                    "Expected {} bytes, got {}", expected_len, vec.len()
                 )));
             }
-            result.extend_from_slice(vec);
+            let mut reversed = vec.clone();
+            reversed.reverse();
+            res.extend_from_slice(&reversed);
             Ok(())
         };
 
-        // Point A (G1): [x, y]
+        // Helper function to add bytes without reversing
+        let add_bytes = |res: &mut Vec<u8>, vec: &Vec<u8>, expected_len: usize| -> Result<(), ProverError> {
+            if vec.len() != expected_len {
+                return Err(ProverError::SerializationError(format!(
+                    "Expected {} bytes, got {}", expected_len, vec.len()
+                )));
+            }
+            res.extend_from_slice(vec);
+            Ok(())
+        };
+
+        // Point A (G1): [x, y] - BIG-ENDIAN (no reversal needed)
         if seal.a.len() != 2 {
             return Err(ProverError::SerializationError(format!(
                 "Invalid G1 point A: expected 2 coordinates, got {}",
                 seal.a.len()
             )));
         }
-        extend_bytes(&seal.a[0], 32)?; // A.x
-        extend_bytes(&seal.a[1], 32)?; // A.y
+        add_reversed(&mut result, &seal.a[0], 32)?; // A.x - LITTLE-ENDIAN
+        add_reversed(&mut result, &seal.a[1], 32)?; // A.y - LITTLE-ENDIAN
 
         // Point B (G2): [[x_c0, x_c1], [y_c0, y_c1]]
+        // BIG-ENDIAN (no reversal) - NEAR uses EIP-197 compatible alt_bn128
         if seal.b.len() != 2 {
             return Err(ProverError::SerializationError(format!(
                 "Invalid G2 point B: expected 2 Fp2 elements, got {}",
@@ -316,20 +331,31 @@ impl ProverService {
                 "Invalid G2 point B: Fp2 elements must have 2 components each".to_string(),
             ));
         }
-        extend_bytes(&seal.b[0][0], 32)?; // B.x_c0
-        extend_bytes(&seal.b[0][1], 32)?; // B.x_c1
-        extend_bytes(&seal.b[1][0], 32)?; // B.y_c0
-        extend_bytes(&seal.b[1][1], 32)?; // B.y_c1
 
-        // Point C (G1): [x, y]
+        eprintln!("=== PROOF B POINT DEBUG ===");
+        eprintln!("seal.b[0][0] (x_c0 real) BE: {}", hex::encode(&seal.b[0][0]));
+        eprintln!("seal.b[0][1] (x_c1 imag) BE: {}", hex::encode(&seal.b[0][1]));
+        eprintln!("seal.b[1][0] (y_c0 real) BE: {}", hex::encode(&seal.b[1][0]));
+        eprintln!("seal.b[1][1] (y_c1 imag) BE: {}", hex::encode(&seal.b[1][1]));
+
+        // Match groth16.rs format: c0,c1 order (NO swap), but with LITTLE-ENDIAN reversal
+        // Add Point B in LITTLE-ENDIAN with standard Fq2 ordering
+        add_reversed(&mut result, &seal.b[0][0], 32)?; // B.x_c0 (real) FIRST - LITTLE-ENDIAN
+        add_reversed(&mut result, &seal.b[0][1], 32)?; // B.x_c1 (imaginary) SECOND - LITTLE-ENDIAN
+        add_reversed(&mut result, &seal.b[1][0], 32)?; // B.y_c0 (real) FIRST - LITTLE-ENDIAN
+        add_reversed(&mut result, &seal.b[1][1], 32)?; // B.y_c1 (imaginary) SECOND - LITTLE-ENDIAN
+
+        eprintln!("Sent proof B with Fq2 components in c0,c1 order (NO swap) in LITTLE-ENDIAN");
+
+        // Point C (G1): [x, y] - BIG-ENDIAN (no reversal needed)
         if seal.c.len() != 2 {
             return Err(ProverError::SerializationError(format!(
                 "Invalid G1 point C: expected 2 coordinates, got {}",
                 seal.c.len()
             )));
         }
-        extend_bytes(&seal.c[0], 32)?; // C.x
-        extend_bytes(&seal.c[1], 32)?; // C.y
+        add_reversed(&mut result, &seal.c[0], 32)?; // C.x - LITTLE-ENDIAN
+        add_reversed(&mut result, &seal.c[1], 32)?; // C.y - LITTLE-ENDIAN
 
         // Verify total length
         if result.len() != 256 {
@@ -365,7 +391,7 @@ impl ProverService {
                     "Proof generated successfully"
                 );
                 ProofResult::Success {
-                    proof,
+                    receipt: proof,
                     image_id,
                     journal,
                     generation_time_ms,
@@ -517,8 +543,8 @@ impl ProverService {
         let groth16_seal = risc0_groth16::prove::shrink_wrap(&seal_bytes)
             .map_err(|e| ProverError::GenerationFailed(format!("Groth16 conversion failed: {}", e)))?;
 
-        // Use built-in to_vec() method - RISC Zero outputs in Ethereum-compatible format
-        let seal_bytes = groth16_seal.to_vec();
+        // Convert seal to fixed 256-byte format expected by NEAR contract
+        let seal_bytes = Self::convert_seal_to_fixed_format(&groth16_seal)?;
 
         // Compute claim digest (required for RISC Zero universal Groth16 verification)
         use risc0_zkvm::sha::Digestible;
@@ -535,8 +561,8 @@ impl ProverService {
             receipt.journal.bytes.len()
         );
 
-        // Package: image_id (32) + claim_digest (32) + seal (256) + journal (public outputs)
-        // This matches the format expected by the NEAR zk-verifier contract
+        // Package: image_id (32) + claim_digest (32) + seal (256) + journal (raw bytes from RISC Zero)
+        // The journal is already in the correct raw format - just pass it through
         let mut proof_bytes = Vec::new();
         proof_bytes.extend_from_slice(&image_id);
         proof_bytes.extend_from_slice(&claim_digest_bytes);

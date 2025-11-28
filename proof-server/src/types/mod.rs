@@ -247,8 +247,8 @@ pub struct Attestation {
 pub struct GenerateProofResponse {
     /// Unique proof request ID
     pub request_id: String,
-    /// The ZK proof (RISC Zero receipt, serialized)
-    pub proof: Vec<u8>,
+    /// The ZK receipt (complete RISC Zero receipt: image_id + claim_digest + seal + journal)
+    pub receipt: Vec<u8>,
     /// Image ID of the circuit that generated the proof
     pub image_id: [u8; 32],
     /// Proof type
@@ -333,7 +333,7 @@ pub struct ProofJob {
 #[derive(Debug)]
 pub enum ProofResult {
     Success {
-        proof: Vec<u8>,
+        receipt: Vec<u8>,
         image_id: [u8; 32],
         journal: Vec<u8>,
         generation_time_ms: u64,

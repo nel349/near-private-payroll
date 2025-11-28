@@ -69,7 +69,7 @@ test.serial('can view chain configurations', async (t) => {
   // Check Zcash config
   const zcashConfig = await ctx.intentsAdapter.view('get_chain_config', {
     chain: DestinationChain.Zcash,
-  });
+  }) as any;
 
   t.truthy(zcashConfig);
   t.true(zcashConfig.deposit_enabled);
@@ -95,7 +95,7 @@ test.serial('owner can update chain configuration', async (t) => {
 
   const updatedConfig = await ctx.intentsAdapter.view('get_chain_config', {
     chain: DestinationChain.Zcash,
-  });
+  }) as any;
 
   t.is(updatedConfig.fee_bps, 75);
   t.is(updatedConfig.min_withdrawal, '20000000');
@@ -128,7 +128,7 @@ test.serial('company can deposit wZEC for payroll funding', async (t) => {
       amount: depositAmount,
       zcash_tx_hash: 'mock_zcash_tx_hash_001',
     },
-    { attachedDeposit: '1' }
+    { attachedDeposit: BigInt('1') }
   );
 
   // Check company has wZEC
@@ -142,7 +142,7 @@ test.serial('company can deposit wZEC for payroll funding', async (t) => {
     ctx.wzecToken,
     'storage_deposit',
     { account_id: ctx.payroll.accountId },
-    { attachedDeposit: parseNEAR('0.01').toString() }
+    { attachedDeposit: BigInt(parseNEAR('0.01')) }
   );
 
   // Company deposits to payroll via ft_transfer_call through intents adapter
@@ -150,7 +150,7 @@ test.serial('company can deposit wZEC for payroll funding', async (t) => {
     ctx.wzecToken,
     'storage_deposit',
     { account_id: ctx.intentsAdapter.accountId },
-    { attachedDeposit: parseNEAR('0.01').toString() }
+    { attachedDeposit: BigInt(parseNEAR('0.01')) }
   );
 
   // Transfer to intents adapter with deposit message
@@ -163,7 +163,7 @@ test.serial('company can deposit wZEC for payroll funding', async (t) => {
       memo: 'Company payroll funding',
       msg: `deposit:${ctx.owner.accountId}`, // Message format: deposit:company_id
     },
-    { attachedDeposit: '1', gas: '100000000000000' }
+    { attachedDeposit: BigInt('1'), gas: BigInt('100000000000000') }
   );
 
   // Check company balance in payroll
@@ -185,7 +185,7 @@ test.serial('bridge relayer can confirm cross-chain deposit', async (t) => {
       amount: amount,
       zcash_tx_hash: sourceTxHash,
     },
-    { attachedDeposit: '1' }
+    { attachedDeposit: BigInt('1') }
   );
 
   // Relayer confirms the deposit
@@ -199,7 +199,7 @@ test.serial('bridge relayer can confirm cross-chain deposit', async (t) => {
   // Check pending deposit was created
   const pendingDeposit = await ctx.intentsAdapter.view('get_pending_deposit', {
     source_tx_hash: sourceTxHash,
-  });
+  }) as any;
 
   t.truthy(pendingDeposit);
   t.is(pendingDeposit.amount, amount);
@@ -225,13 +225,13 @@ test.serial('setup: add employee and fund balance', async (t) => {
       salary_commitment: salaryCommitment,
       public_key: randomBytes32(),
     },
-    { attachedDeposit: parseNEAR('0.1').toString() }
+    { attachedDeposit: BigInt(parseNEAR('0.1')) }
   );
 
   // Verify employee was added
   const employee = await ctx.payroll.view('get_employee', {
     employee_id: ctx.employee1.accountId,
-  });
+  }) as any;
   t.truthy(employee);
   t.is(employee.status, 'Active');
 
@@ -248,7 +248,7 @@ test.serial('setup: add employee and fund balance', async (t) => {
       amount: '500000000', // 5 ZEC
       zcash_tx_hash: 'mock_funding_tx',
     },
-    { attachedDeposit: '1' }
+    { attachedDeposit: BigInt('1') }
   );
 
   // Transfer to payroll as company deposit
@@ -256,7 +256,7 @@ test.serial('setup: add employee and fund balance', async (t) => {
     ctx.wzecToken,
     'storage_deposit',
     { account_id: ctx.payroll.accountId },
-    { attachedDeposit: parseNEAR('0.01').toString() }
+    { attachedDeposit: BigInt(parseNEAR('0.01')) }
   );
 
   await ctx.owner.call(
@@ -268,7 +268,7 @@ test.serial('setup: add employee and fund balance', async (t) => {
       memo: 'Payroll funding',
       msg: 'deposit',
     },
-    { attachedDeposit: '1', gas: '100000000000000' }
+    { attachedDeposit: BigInt('1'), gas: BigInt('100000000000000') }
   );
 
   t.pass('Employee setup complete');
@@ -295,7 +295,7 @@ test.serial('employee can initiate withdrawal to Zcash shielded address', async 
       period: '2024-01',
       zk_proof: new Array(64).fill(0), // Mock proof
     },
-    { attachedDeposit: '1', gas: '100000000000000' }
+    { attachedDeposit: BigInt('1'), gas: BigInt('100000000000000') }
   );
 
   // Check employee balance (may be 0 in dev mode, that's ok for this test)
@@ -427,11 +427,11 @@ test.serial('end-to-end: company deposit from Zcash', async (t) => {
       amount: depositAmount,
       zcash_tx_hash: zcashTxHash,
     },
-    { attachedDeposit: '1' }
+    { attachedDeposit: BigInt('1') }
   );
 
   // Step 3-4: Transfer through intents adapter to payroll
-  const initialBalance = await ctx.payroll.view('get_company_balance', {});
+  const initialBalance = await ctx.payroll.view('get_company_balance', {}) as any;
 
   await ctx.company.call(
     ctx.wzecToken,
@@ -442,11 +442,11 @@ test.serial('end-to-end: company deposit from Zcash', async (t) => {
       memo: 'E2E test deposit',
       msg: `deposit:${ctx.owner.accountId}:zcash:${zcashTxHash}`,
     },
-    { attachedDeposit: '1', gas: '150000000000000' }
+    { attachedDeposit: BigInt('1'), gas: BigInt('150000000000000') }
   );
 
   // Verify company balance increased
-  const finalBalance = await ctx.payroll.view('get_company_balance', {});
+  const finalBalance = await ctx.payroll.view('get_company_balance', {}) as any;
   t.true(
     BigInt(finalBalance) > BigInt(initialBalance),
     `Balance should increase: ${initialBalance} → ${finalBalance}`

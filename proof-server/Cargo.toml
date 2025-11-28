@@ -5,6 +5,7 @@ edition = "2021"
 description = "ZK Proof Generation Server with TEE Support"
 license = "MIT"
 
+
 [[bin]]
 name = "proof-server"
 path = "src/main.rs"

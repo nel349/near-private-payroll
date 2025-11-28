@@ -61,13 +61,15 @@ export interface TestContext {
 /**
  * Supported destination chains (matches contract)
  */
-export enum DestinationChain {
-  Zcash = 'Zcash',
-  Solana = 'Solana',
-  Ethereum = 'Ethereum',
-  Bitcoin = 'Bitcoin',
-  Near = 'Near',
-}
+export const DestinationChain = {
+  Zcash: 'Zcash',
+  Solana: 'Solana',
+  Ethereum: 'Ethereum',
+  Bitcoin: 'Bitcoin',
+  Near: 'Near',
+} as const;
+
+export type DestinationChain = typeof DestinationChain[keyof typeof DestinationChain];
 
 /**
  * Mock Zcash addresses for testing

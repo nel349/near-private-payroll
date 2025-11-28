@@ -38,13 +38,17 @@ mod hex_serde {
         let s: String = String::deserialize(deserializer)?;
         let s = s.strip_prefix("0x").unwrap_or(&s);
 
-        let bytes = hex::decode(s).map_err(near_sdk::serde::de::Error::custom)?;
+        let mut bytes = hex::decode(s).map_err(near_sdk::serde::de::Error::custom)?;
         if bytes.len() != 32 {
             return Err(near_sdk::serde::de::Error::custom(format!(
                 "Expected 32 bytes, got {}",
                 bytes.len()
             )));
         }
+
+        // CRITICAL: RISC Zero outputs big-endian hex, but NEAR's alt_bn128 interprets
+        // the byte arrays as LITTLE-ENDIAN integers. We must reverse to convert.
+        bytes.reverse();
 
         let mut array = [0u8; 32];
         array.copy_from_slice(&bytes);
@@ -640,7 +644,26 @@ impl ZkVerifier {
         let proof = self.parse_groth16_proof(&receipt[64..320]);
 
         // Extract journal (public outputs)
-        let journal = receipt[320..].to_vec();
+        // RISC Zero journal has 144 bytes of metadata/header, then the actual committed data
+        let full_journal = &receipt[320..];
+
+        env::log_str(&format!(
+            "Full journal length: {} bytes, first 16 bytes: {}",
+            full_journal.len(),
+            hex::encode(&full_journal[..full_journal.len().min(16)])
+        ));
+
+        let journal = if full_journal.len() > 144 {
+            let extracted = full_journal[144..].to_vec();
+            env::log_str(&format!(
+                "Extracted journal (skipped 144 bytes): {} bytes, first 16: {}",
+                extracted.len(),
+                hex::encode(&extracted[..extracted.len().min(16)])
+            ));
+            extracted
+        } else {
+            full_journal.to_vec()
+        };
 
         env::log_str(&format!(
             "RISC Zero Groth16 verification - claim_digest: {}, journal: {} bytes",
@@ -662,35 +685,61 @@ impl ZkVerifier {
 
     /// Parse Groth16 proof from bytes
     /// Format: A(64 bytes) || B(128 bytes) || C(64 bytes)
+    ///
+    /// NOTE: RISC Zero's Groth16 seal is encoded in BIG-ENDIAN format (confirmed in risc0-groth16 source).
+    /// CRITICAL: NEAR's alt_bn128 precompiles expect LITTLE-ENDIAN format!
+    /// This is DIFFERENT from Ethereum's EIP-197 which uses BIG-ENDIAN.
+    /// Proof-server sends LITTLE-ENDIAN, we use as-is (NO REVERSAL).
     fn parse_groth16_proof(&self, data: &[u8]) -> Groth16Proof {
         assert!(data.len() >= 256, "Invalid proof data length");
 
+        env::log_str("=== PARSING GROTH16 PROOF ===");
+
+        // Parse A (G1 point)
+        // Proof-server sends LITTLE-ENDIAN, NEAR expects LITTLE-ENDIAN
         let mut a_x = [0u8; 32];
         let mut a_y = [0u8; 32];
-        a_x.copy_from_slice(&data[0..32]);
-        a_y.copy_from_slice(&data[32..64]);
+        a_x.copy_from_slice(&data[0..32]);   // Use as-is (LE)
+        a_y.copy_from_slice(&data[32..64]);  // Use as-is (LE)
+        // NO REVERSAL - NEAR uses LE!
 
+        env::log_str(&format!("A.x (LE): {}", hex::encode(&a_x[..8])));
+
+        // Parse B (G2 point)
+        // Proof-server sends in LITTLE-ENDIAN format: (c0, c1) components
+        // NEAR expects LITTLE-ENDIAN (different from Ethereum!)
         let mut b_x_c0 = [0u8; 32];
         let mut b_x_c1 = [0u8; 32];
         let mut b_y_c0 = [0u8; 32];
         let mut b_y_c1 = [0u8; 32];
-        b_x_c0.copy_from_slice(&data[64..96]);
-        b_x_c1.copy_from_slice(&data[96..128]);
-        b_y_c0.copy_from_slice(&data[128..160]);
-        b_y_c1.copy_from_slice(&data[160..192]);
 
+        b_x_c0.copy_from_slice(&data[64..96]);    // Use as-is (LE)
+        b_x_c1.copy_from_slice(&data[96..128]);   // Use as-is (LE)
+        b_y_c0.copy_from_slice(&data[128..160]);  // Use as-is (LE)
+        b_y_c1.copy_from_slice(&data[160..192]);  // Use as-is (LE)
+        // NO REVERSAL - NEAR uses LE!
+
+        env::log_str(&format!("B.x_c0 (LE, real): {}", hex::encode(&b_x_c0[..8])));
+
+        // Parse C (G1 point)
+        // Proof-server sends LITTLE-ENDIAN, NEAR expects LITTLE-ENDIAN
         let mut c_x = [0u8; 32];
         let mut c_y = [0u8; 32];
-        c_x.copy_from_slice(&data[192..224]);
-        c_y.copy_from_slice(&data[224..256]);
+        c_x.copy_from_slice(&data[192..224]);  // Use as-is (LE)
+        c_y.copy_from_slice(&data[224..256]);  // Use as-is (LE)
+        // NO REVERSAL - NEAR uses LE!
+
+        env::log_str(&format!("C.x (LE): {}", hex::encode(&c_x[..8])));
+
+        env::log_str("=== PROOF PARSING COMPLETE ===");
 
         Groth16Proof {
             a: G1Point { x: a_x, y: a_y },
             b: G2Point {
-                x_c0: b_x_c0,
-                x_c1: b_x_c1,
-                y_c0: b_y_c0,
-                y_c1: b_y_c1,
+                x_c0: b_x_c0, // LITTLE-ENDIAN: real component
+                x_c1: b_x_c1, // LITTLE-ENDIAN: imaginary component
+                y_c0: b_y_c0, // LITTLE-ENDIAN: real component
+                y_c1: b_y_c1, // LITTLE-ENDIAN: imaginary component
             },
             c: G1Point { x: c_x, y: c_y },
         }
@@ -710,103 +759,144 @@ impl ZkVerifier {
     ) -> bool {
         // RISC Zero constants (from risc0-circuit-recursion and risc0-groth16)
 
-        // ALLOWED_CONTROL_ROOT for po2_max=24 with poseidon2
+        // ALLOWED_CONTROL_ROOT from risc0-circuit-recursion 4.0.3
         // This is the control root that RISC Zero uses for recursion
         const CONTROL_ROOT: [u8; 32] = hex_literal::hex!(
-            "8b6dcf11d463ac455361ce8a1e8b7e41e8663d8e1881d9b785ebdb2e9f9c3f7c"
+            "a54dc85ac99f851c92d7c96d7318af41dbe7c0194edfcc37eb4d422a998c1f56"
         );
 
-        // BN254_IDENTITY_CONTROL_ID (from risc0-circuit-recursion)
+        // BN254_IDENTITY_CONTROL_ID from risc0-circuit-recursion 4.0.3
+        // NOTE: Original value c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404
+        // is >= BN254 Fr modulus. NEAR's alt_bn128 precompiles reject such values (unlike
+        // Solidity which auto-reduces). We use the pre-reduced value which is equivalent
+        // in Fr field arithmetic. RISC Zero's prover also reduces this internally.
         const BN254_CONTROL_ID: [u8; 32] = hex_literal::hex!(
-            "c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404"
+            "2f4d79bbb8a7d40e3810c50b21839bc61b2b9ae1b96b0b00b4452017966e4401"
         );
 
-        // Split digests into two 16-byte halves (big-endian, reversed)
+        // Split digests into two 128-bit halves (as per RISC Zero Solidity verifier)
         let (control_a0, control_a1) = self.split_digest(&CONTROL_ROOT);
         let (claim_c0, claim_c1) = self.split_digest(claim_digest);
 
-        // Reverse bn254_control_id for field element
-        let mut bn254_id_reversed = BN254_CONTROL_ID;
-        bn254_id_reversed.reverse();
+        // BN254_CONTROL_ID: reverse for little-endian (NEAR alt_bn128 format)
+        let mut bn254_id = BN254_CONTROL_ID;
+        bn254_id.reverse(); // Convert to little-endian
+        let mut bn254_id_padded = [0u8; 32];
+        bn254_id_padded.copy_from_slice(&bn254_id);
 
-        // Public inputs for RISC Zero Groth16 verification
-        let public_inputs = [control_a0, control_a1, claim_c0, claim_c1, bn254_id_reversed];
+        // Public inputs for RISC Zero Groth16 verification (5 field elements)
+        let public_inputs = [control_a0, control_a1, claim_c0, claim_c1, bn254_id_padded];
 
         env::log_str(&format!(
             "RISC Zero verification with claim_digest: {}",
             hex::encode(claim_digest)
+        ));
+        env::log_str(&format!(
+            "Public inputs:\n  control_a0: {}\n  control_a1: {}\n  claim_c0: {}\n  claim_c1: {}\n  bn254_id: {}",
+            hex::encode(&control_a0),
+            hex::encode(&control_a1),
+            hex::encode(&claim_c0),
+            hex::encode(&claim_c1),
+            hex::encode(&bn254_id_padded)
         ));
 
         // Get RISC Zero universal VK
         let vk = self.get_risc_zero_universal_vk();
 
         // Call standard Groth16 verification with RISC Zero's universal VK
-        self.verify_groth16_with_vk(proof, &vk, &public_inputs)
+        let result = self.verify_groth16_with_vk(proof, &vk, &public_inputs);
+        env::log_str(&format!("Groth16 verification result: {}", result));
+        result
     }
 
-    /// Split a 32-byte digest into two 16-byte halves (RISC Zero format)
-    /// Returns (low 16 bytes reversed, high 16 bytes reversed)
+    /// Split a 32-byte digest into two 128-bit halves (RISC Zero format)
+    /// Matches risc0-ethereum splitDigest() logic:
+    /// 1. Treat digest as big-endian uint256
+    /// 2. Take low 128 bits and high 128 bits
+    /// 3. Return as little-endian 32-byte arrays for BN254
     fn split_digest(&self, digest: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
-        // Reverse the full digest to big-endian
+        // Match Solidity's splitDigest behavior:
+        // 1. Reverse the full digest (uint256 reversed = reverseByteOrderUint256(uint256(digest)))
+        // 2. Split into low/high 128-bit halves
+        // 3. Each half is interpreted as big-endian in Solidity (bytes16 -> uint128 -> uint256)
+        // 4. But NEAR interprets [u8; 32] as little-endian, so we need to reverse each half again!
+
         let mut reversed = *digest;
-        reversed.reverse();
+        reversed.reverse(); // Full digest reversed
 
-        // Split into two 16-byte halves
-        let mut low = [0u8; 16];
-        let mut high = [0u8; 16];
-        low.copy_from_slice(&reversed[0..16]);
-        high.copy_from_slice(&reversed[16..32]);
+        // Extract and reverse each 128-bit half to match Solidity's big-endian interpretation
+        let mut low_128 = [0u8; 32];
+        let mut high_128 = [0u8; 32];
 
-        // Pad to 32 bytes (little-endian field elements)
-        let mut low_32 = [0u8; 32];
-        let mut high_32 = [0u8; 32];
-        low_32[0..16].copy_from_slice(&low);
-        high_32[0..16].copy_from_slice(&high);
+        // IMPORTANT: After reversing, the LAST 16 bytes are the low 128 bits,
+        // and the FIRST 16 bytes are the high 128 bits (when interpreted as a number)
 
-        (low_32, high_32)
+        // Copy the low 128 bits (LAST 16 bytes of reversed), then reverse them
+        let mut low_bytes = [0u8; 16];
+        low_bytes.copy_from_slice(&reversed[16..]);  // Last 16 = low 128 bits
+        low_bytes.reverse(); // Now matches Solidity's big-endian uint128
+        low_128[..16].copy_from_slice(&low_bytes);
+
+        // Copy the high 128 bits (FIRST 16 bytes of reversed), then reverse them
+        let mut high_bytes = [0u8; 16];
+        high_bytes.copy_from_slice(&reversed[..16]);  // First 16 = high 128 bits
+        high_bytes.reverse(); // Now matches Solidity's big-endian uint128
+        high_128[..16].copy_from_slice(&high_bytes);
+
+        (low_128, high_128)
     }
 
     /// Get RISC Zero's universal Groth16 verification key
     /// This is the SAME key for ALL RISC Zero circuits
-    /// TODO: Replace with actual hardcoded VK from RISC Zero
     fn get_risc_zero_universal_vk(&self) -> Groth16VerificationKey {
         // RISC Zero Universal Groth16 Verification Key
         // Extracted from risc0-groth16 v3.0.3
         // Source: risc0-groth16/src/verifier.rs
         // This is the SAME key for ALL RISC Zero circuits
+        //
+        // CRITICAL: All constants are REVERSED from big-endian (RISC Zero format)
+        // to little-endian (NEAR alt_bn128 interpretation)
+        // Generated via: node scripts/reverse_vk_constants.js
 
-        // VK constants (extracted via scripts/vk_extractor)
-        const ALPHA_G1_X: [u8; 32] = hex_literal::hex!("2d4d9aa7e302d9df41749d5507949d05dbea33fbb16c643b22f599a2be6df2e2");
-        const ALPHA_G1_Y: [u8; 32] = hex_literal::hex!("14bedd503c37ceb061d8ec60209fe345ce89830a19230301f076caff004d1926");
+        // VK constants (REVERSED for NEAR little-endian interpretation)
+        // RISC Zero v3.0.3 Universal Groth16 Verification Key
+        // Converted from risc0-ethereum v3.0.0 Groth16Verifier.sol to little-endian
+        // FIXED: Corrected G2 point component ordering based on RISC Zero types.rs conversion logic
+        const ALPHA_G1_X: [u8; 32] = hex_literal::hex!("e2f26dbea299f5223b646cb1fb33eadb059d9407559d7441dfd902e3a79a4d2d");
+        const ALPHA_G1_Y: [u8; 32] = hex_literal::hex!("26194d00ffca76f0010323190a8389ce45e39f2060ecd861b0ce373c50ddbe14");
 
-        const BETA_G2_X_C0: [u8; 32] = hex_literal::hex!("0967032fcbf776d1afc985f88877f182d38480a653f2decaa9794cbc3bf3060c");
-        const BETA_G2_X_C1: [u8; 32] = hex_literal::hex!("0e187847ad4c798374d0d6732bf501847dd68bc0e071241e0213bc7fc13db7ab");
-        const BETA_G2_Y_C0: [u8; 32] = hex_literal::hex!("304cfbd1e08a704a99f5e847d93f8c3caafddec46b7a0d379da69a4d112346a7");
-        const BETA_G2_Y_C1: [u8; 32] = hex_literal::hex!("1739c1b1a457a8c7313123d24d2f9192f896b7c63eea05a9d57f06547ad0cec8");
+        const BETA_G2_X_C0: [u8; 32] = hex_literal::hex!("abb73dc17fbc13021e2471e0c08bd67d8401f52b73d6d07483794cad4778180e");  // x real
+        const BETA_G2_X_C1: [u8; 32] = hex_literal::hex!("0c06f33bbc4c79a9cadef253a68084d382f17788f885c9afd176f7cb2f036709");  // x imaginary
+        const BETA_G2_Y_C0: [u8; 32] = hex_literal::hex!("c8ced07a54067fd5a905ea3ec6b796f892912f4dd2233131c7a857a4b1c13917");  // y real
+        const BETA_G2_Y_C1: [u8; 32] = hex_literal::hex!("a74623114d9aa69d370d7a6bc4defdaa3c8c3fd947e8f5994a708ae0d1fb4c30");  // y imaginary
 
-        const GAMMA_G2_X_C0: [u8; 32] = hex_literal::hex!("198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2");
-        const GAMMA_G2_X_C1: [u8; 32] = hex_literal::hex!("1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed");
-        const GAMMA_G2_Y_C0: [u8; 32] = hex_literal::hex!("090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b");
-        const GAMMA_G2_Y_C1: [u8; 32] = hex_literal::hex!("12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa");
+        const GAMMA_G2_X_C0: [u8; 32] = hex_literal::hex!("edf692d95cbdde46ddda5ef7d422436779445c5e66006a42761e1f12efde0018");  // x real
+        const GAMMA_G2_X_C1: [u8; 32] = hex_literal::hex!("c212f3aeb785e49712e7a9353349aaf1255dfb31b7bf60723a480d9293938e19");  // x imaginary
+        const GAMMA_G2_Y_C0: [u8; 32] = hex_literal::hex!("aa7dfa6601cce64c7bd3430c69e7d1e38f40cb8d8071ab4aeb6d8cdba55ec812");  // y real
+        const GAMMA_G2_Y_C1: [u8; 32] = hex_literal::hex!("5b9722d1dcdaac55f38eb37033314bbc95330c69ad999eec75f05f58d0890609");  // y imaginary
 
-        const DELTA_G2_X_C0: [u8; 32] = hex_literal::hex!("03b03cd5effa95ac9bee94f1f5ef907157bda4812ccf0b4c91f42bb629f83a1c");
-        const DELTA_G2_X_C1: [u8; 32] = hex_literal::hex!("1aa085ff28179a12d922dba0547057ccaae94b9d69cfaa4e60401fea7f3e0333");
-        const DELTA_G2_Y_C0: [u8; 32] = hex_literal::hex!("110c10134f200b19f6490846d518c9aea868366efb7228ca5c91d2940d030762");
-        const DELTA_G2_Y_C1: [u8; 32] = hex_literal::hex!("1e60f31fcbf757e837e867178318832d0b2d74d59e2fea1c7142df187d3fc6d3");
+        const DELTA_G2_X_C0: [u8; 32] = hex_literal::hex!("33033e7fea1f40604eaacf699d4be9aacc577054a0db22d9129a1728ff85a01a");  // x real
+        const DELTA_G2_X_C1: [u8; 32] = hex_literal::hex!("1c3af829b62bf4914c0bcf2c81a4bd577190eff5f194ee9bac95faefd53cb003");  // x imaginary
+        const DELTA_G2_Y_C0: [u8; 32] = hex_literal::hex!("d3c63f7d18df42711cea2f9ed5742d0b2d8318831767e837e857f7cb1ff3601e");  // y real
+        const DELTA_G2_Y_C1: [u8; 32] = hex_literal::hex!("6207030d94d2915cca2872fb6e3668a8aec918d5460849f6190b204f13100c11");  // y imaginary
 
         // IC points (6 total = 5 public inputs + 1)
-        const IC0_X: [u8; 32] = hex_literal::hex!("12ac9a25dcd5e1a832a9061a082c15dd1d61aa9c4d553505739d0f5d65dc3be4");
-        const IC0_Y: [u8; 32] = hex_literal::hex!("025aa744581ebe7ad91731911c898569106ff5a2d30f3eee2b23c60ee980acd4");
-        const IC1_X: [u8; 32] = hex_literal::hex!("0707b920bc978c02f292fae2036e057be54294114ccc3c8769d883f688a1423f");
-        const IC1_Y: [u8; 32] = hex_literal::hex!("2e32a094b7589554f7bc357bf63481acd2d55555c203383782a4650787ff6642");
-        const IC2_X: [u8; 32] = hex_literal::hex!("0bca36e2cbe6394b3e249751853f961511011c7148e336f4fd974644850fc347");
-        const IC2_Y: [u8; 32] = hex_literal::hex!("2ede7c9acf48cf3a3729fa3d68714e2a8435d4fa6db8f7f409c153b1fcdf9b8b");
-        const IC3_X: [u8; 32] = hex_literal::hex!("1b8af999dbfbb3927c091cc2aaf201e488cbacc3e2c6b6fb5a25f9112e04f2a7");
-        const IC3_Y: [u8; 32] = hex_literal::hex!("2b91a26aa92e1b6f5722949f192a81c850d586d81a60157f3e9cf04f679cccd6");
-        const IC4_X: [u8; 32] = hex_literal::hex!("2b5f494ed674235b8ac1750bdfd5a7615f002d4a1dcefeddd06eda5a076ccd0d");
-        const IC4_Y: [u8; 32] = hex_literal::hex!("2fe520ad2020aab9cbba817fcbb9a863b8a76ff88f14f912c5e71665b2ad5e82");
-        const IC5_X: [u8; 32] = hex_literal::hex!("0f1c3c0d5d9da0fa03666843cde4e82e869ba5252fce3c25d5940320b1c4d493");
-        const IC5_Y: [u8; 32] = hex_literal::hex!("214bfcff74f425f6fe8c0d07b307482d8bc8bb2f3608f68287aa01bd0b69e809");
+        const IC0_X: [u8; 32] = hex_literal::hex!("e43bdc655d0f9d730535554d9caa611ddd152c081a06a932a8e1d5dc259aac12");
+        const IC0_Y: [u8; 32] = hex_literal::hex!("d4ac80e90ec6232bee3e0fd3a2f56f106985891c913117d97abe1e5844a75a02");
+        const IC1_X: [u8; 32] = hex_literal::hex!("3f42a188f683d869873ccc4c119442e57b056e03e2fa92f2028c97bc20b90707");
+        const IC1_Y: [u8; 32] = hex_literal::hex!("4266ff870765a482373803c25555d5d2ac8134f67b35bcf7549558b794a0322e");
+        const IC2_X: [u8; 32] = hex_literal::hex!("47c30f85444697fdf436e348711c011115963f855197243e4b39e6cbe236ca0b");
+        const IC2_Y: [u8; 32] = hex_literal::hex!("8b9bdffcb153c109f4f7b86dfad435842a4e71683dfa29373acf48cf9a7cde2e");
+        const IC3_X: [u8; 32] = hex_literal::hex!("a7f2042e11f9255afbb6c6e2c3accb88e401f2aac21c097c92b3fbdb99f98a1b");
+        const IC3_Y: [u8; 32] = hex_literal::hex!("d6cc9c674ff09c3e7f15601ad886d550c8812a199f9422576f1b2ea96aa2912b");
+        const IC4_X: [u8; 32] = hex_literal::hex!("0dcd6c075ada6ed0ddfece1d4a2d005f61a7d5df0b75c18a5b2374d64e495f2b");
+        const IC4_Y: [u8; 32] = hex_literal::hex!("825eadb26516e7c512f9148ff86fa7b863a8b9cb7f81bacbb9aa2020ad20e52f");
+        const IC5_X: [u8; 32] = hex_literal::hex!("93d4c4b1200394d5253cce2f25a59b862ee8e4cd43686603faa09d5d0d3c1c0f");
+        const IC5_Y: [u8; 32] = hex_literal::hex!("09e8690bbd01aa8782f608362fbbc88b2d4807b3070d8cfef625f474fffc4b21");
+
+        // CRITICAL: VK constants above are stored in LITTLE-ENDIAN format (reversed).
+        // NEAR's alt_bn128 precompiles actually expect LITTLE-ENDIAN (NOT big-endian).
+        // Use the constants as-is (already in little-endian).
 
         Groth16VerificationKey {
             alpha_g1: G1Point {
@@ -840,6 +930,47 @@ impl ZkVerifier {
                 G1Point { x: IC5_X, y: IC5_Y },
             ],
         }
+    }
+
+    /// Test VK G2 point validity by constructing a simple pairing check
+    /// This helps debug G2 point format issues
+    pub fn test_vk_g2_point(&self) -> bool {
+        // VK beta_g2 constants
+        const BETA_G2_X_C0: [u8; 32] = hex_literal::hex!("abb73dc17fbc13021e2471e0c08bd67d8401f52b73d6d07483794cad4778180e");
+        const BETA_G2_X_C1: [u8; 32] = hex_literal::hex!("0c06f33bbc4c79a9cadef253a68084d382f17788f885c9afd176f7cb2f036709");
+        const BETA_G2_Y_C0: [u8; 32] = hex_literal::hex!("c8ced07a54067fd5a905ea3ec6b796f892912f4dd2233131c7a857a4b1c13917");
+        const BETA_G2_Y_C1: [u8; 32] = hex_literal::hex!("a74623114d9aa69d370d7a6bc4defdaa3c8c3fd947e8f5994a708ae0d1fb4c30");
+
+        // Try to construct a pairing check with VK beta_g2
+        // We'll use generator points for simplicity
+        let mut pairing_input = Vec::with_capacity(192);
+
+        // G1 generator: (1, 2)
+        let g1_gen_x = [1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let g1_gen_y = [2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        pairing_input.extend_from_slice(&g1_gen_x);
+        pairing_input.extend_from_slice(&g1_gen_y);
+
+        // Test with VK beta_g2 point - NEAR expects Fq2 components SWAPPED
+        pairing_input.extend_from_slice(&BETA_G2_X_C1);  // imaginary FIRST
+        pairing_input.extend_from_slice(&BETA_G2_X_C0);  // real SECOND
+        pairing_input.extend_from_slice(&BETA_G2_Y_C1);  // imaginary FIRST
+        pairing_input.extend_from_slice(&BETA_G2_Y_C0);  // real SECOND
+
+        env::log_str("=== TESTING VK BETA_G2 POINT ===");
+        env::log_str(&format!("Input length: {} bytes", pairing_input.len()));
+        env::log_str(&format!("beta_g2.x_c0: {}", hex::encode(&BETA_G2_X_C0[..8])));
+        env::log_str(&format!("beta_g2.x_c1: {}", hex::encode(&BETA_G2_X_C1[..8])));
+
+        // alt_bn128_pairing_check returns bool, will panic if G2 point is invalid
+        let result = env::alt_bn128_pairing_check(&pairing_input);
+        env::log_str(&format!("VK beta_g2 validation: {} (pairing result: {})",
+            if result { "SUCCESS" } else { "SUCCESS (pairing=false)" },
+            result));
+
+        // Return true if we got here without panic (meaning G2 point is valid)
+        true
     }
 
     /// Call groth16 verification with the given VK and public inputs
@@ -1038,11 +1169,12 @@ impl ZkVerifier {
         buffer.extend_from_slice(&g1.x);
         buffer.extend_from_slice(&g1.y);
 
+        // Match groth16.rs format: c0,c1 order (NO swap)
         // G2: x_c0 || x_c1 || y_c0 || y_c1 (128 bytes)
-        buffer.extend_from_slice(&g2.x_c0);
-        buffer.extend_from_slice(&g2.x_c1);
-        buffer.extend_from_slice(&g2.y_c0);
-        buffer.extend_from_slice(&g2.y_c1);
+        buffer.extend_from_slice(&g2.x_c0);  // real FIRST
+        buffer.extend_from_slice(&g2.x_c1);  // imaginary SECOND
+        buffer.extend_from_slice(&g2.y_c0);  // real FIRST
+        buffer.extend_from_slice(&g2.y_c1);  // imaginary SECOND
     }
 
     fn record_verification(
@@ -1101,8 +1233,9 @@ impl ZkVerifier {
     /// Format: [threshold: 8, meets_threshold: 1, payment_count: 4, history_commitment: 32]
     /// Total: 45 bytes
     fn parse_income_threshold_output(&self, journal: &[u8], expected_commitment: &[u8; 32]) -> IncomeThresholdOutput {
-        if journal.len() < 45 {
-            env::log_str(&format!("Invalid journal length: {} (expected 45)", journal.len()));
+        // RISC Zero journal format: threshold(8) + meets_threshold(4 as u32!) + payment_count(4) + commitment(32) = 48 bytes
+        if journal.len() < 48 {
+            env::log_str(&format!("Invalid journal length: {} (expected 48)", journal.len()));
             return IncomeThresholdOutput {
                 threshold: 0,
                 meets_threshold: false,
@@ -1113,11 +1246,11 @@ impl ZkVerifier {
         }
 
         let threshold = u64::from_le_bytes(journal[0..8].try_into().unwrap());
-        let meets_threshold = journal[8] != 0;
-        let payment_count = u32::from_le_bytes(journal[9..13].try_into().unwrap());
+        let meets_threshold = u32::from_le_bytes(journal[8..12].try_into().unwrap()) != 0;  // bool serialized as u32!
+        let payment_count = u32::from_le_bytes(journal[12..16].try_into().unwrap());
 
         let mut history_commitment = [0u8; 32];
-        history_commitment.copy_from_slice(&journal[13..45]);
+        history_commitment.copy_from_slice(&journal[16..48]);
 
         IncomeThresholdOutput {
             threshold,
@@ -1261,6 +1394,85 @@ mod tests {
         // Check that high contains last 16 bytes (padded to 32)
         assert_eq!(&high[0..16], &reversed[16..32]);
         assert_eq!(&high[16..32], &[0u8; 16]);
+
+        // CRITICAL: Verify outputs are valid BN254 field elements
+        // BN254 field modulus: 21888242871839275222246405745257275088548364400416034343698204186575808495617
+        // As little-endian bytes (for comparison):
+        let bn254_modulus = num_bigint::BigUint::from_bytes_le(&hex_literal::hex!(
+            "010000f093f5e1439170b97948e833285d588181b64550b829a031e1724e6430"
+        ));
+
+        // Convert our outputs to BigUint for comparison
+        let low_value = num_bigint::BigUint::from_bytes_le(&low);
+        let high_value = num_bigint::BigUint::from_bytes_le(&high);
+
+        // Both must be less than the BN254 field modulus
+        assert!(
+            low_value < bn254_modulus,
+            "Low 128 bits exceed BN254 field modulus: {} >= {}",
+            low_value,
+            bn254_modulus
+        );
+        assert!(
+            high_value < bn254_modulus,
+            "High 128 bits exceed BN254 field modulus: {} >= {}",
+            high_value,
+            bn254_modulus
+        );
+
+        // Additional sanity check: 128-bit values should always be < BN254 modulus
+        // since BN254 modulus is ~254 bits
+        assert!(
+            low_value < (num_bigint::BigUint::from(1u128) << 128),
+            "Low value should fit in 128 bits"
+        );
+        assert!(
+            high_value < (num_bigint::BigUint::from(1u128) << 128),
+            "High value should fit in 128 bits"
+        );
+    }
+
+    #[test]
+    fn test_split_digest_matches_solidity() {
+        // This test ensures our Rust implementation matches RISC Zero's Solidity verifier
+        // Reference: risc0-ethereum/contracts/src/groth16/RiscZeroGroth16Verifier.sol
+        let owner: AccountId = "owner.near".parse().unwrap();
+        let context = get_context(owner.clone());
+        testing_env!(context.build());
+
+        let contract = ZkVerifier::new(owner);
+
+        // Test with known digest
+        let test_digest: [u8; 32] = hex_literal::hex!(
+            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        );
+
+        let (low, high) = contract.split_digest(&test_digest);
+
+        // Expected behavior (matching Solidity):
+        // 1. Reverse entire digest (treat as big-endian number, convert to little-endian)
+        // 2. Low = first 16 bytes (128 bits), High = last 16 bytes (128 bits)
+        let mut expected_reversed = test_digest;
+        expected_reversed.reverse();
+
+        let mut expected_low = [0u8; 32];
+        let mut expected_high = [0u8; 32];
+        expected_low[0..16].copy_from_slice(&expected_reversed[0..16]);
+        expected_high[0..16].copy_from_slice(&expected_reversed[16..32]);
+
+        assert_eq!(
+            low, expected_low,
+            "Low 128 bits mismatch.\nGot:      {:?}\nExpected: {:?}",
+            hex::encode(low),
+            hex::encode(expected_low)
+        );
+
+        assert_eq!(
+            high, expected_high,
+            "High 128 bits mismatch.\nGot:      {:?}\nExpected: {:?}",
+            hex::encode(high),
+            hex::encode(expected_high)
+        );
     }
 
     #[test]
@@ -1284,16 +1496,146 @@ mod tests {
         // RISC Zero universal VK has 6 IC points (5 public inputs + 1)
         assert_eq!(vk.ic.len(), 6);
 
-        // Verify alpha_g1 matches expected values
+        // Verify alpha_g1 matches REVERSED values (little-endian for NEAR)
+        // Original big-endian: "2d4d9aa7e302d9df41749d5507949d05dbea33fbb16c643b22f599a2be6df2e2"
+        // Reversed: "e2f26dbea299f5223b646cb1fb33eadb059d9407559d7441dfd902e3a79a4d2d"
         let expected_alpha_x = hex_literal::hex!(
-            "2d4d9aa7e302d9df41749d5507949d05dbea33fbb16c643b22f599a2be6df2e2"
+            "e2f26dbea299f5223b646cb1fb33eadb059d9407559d7441dfd902e3a79a4d2d"
         );
         let expected_alpha_y = hex_literal::hex!(
-            "14bedd503c37ceb061d8ec60209fe345ce89830a19230301f076caff004d1926"
+            "26194d00ffca76f0010323190a8389ce45e39f2060ecd861b0ce373c50ddbe14"
         );
 
         assert_eq!(vk.alpha_g1.x, expected_alpha_x);
         assert_eq!(vk.alpha_g1.y, expected_alpha_y);
+    }
+
+    #[test]
+    fn test_vk_field_elements_are_valid_bn254() {
+        // CRITICAL TEST: Verifies all VK field elements are valid BN254 field elements
+        // This ensures NEAR's alt_bn128 won't reject them with "invalid fq" error
+        //
+        // BN254 field modulus (p):
+        // 21888242871839275222246405745257275088696311157297823662689037894645226208583
+        // As little-endian hex:
+        // 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001
+
+        use num_bigint::BigUint;
+
+        let bn254_modulus = BigUint::from_bytes_le(&hex_literal::hex!(
+            "010000f093f5e1439170b97948e833285d588181b64550b829a031e1724e6430"
+        ));
+
+        let owner: AccountId = "owner.near".parse().unwrap();
+        let context = get_context(owner.clone());
+        testing_env!(context.build());
+
+        let contract = ZkVerifier::new(owner);
+        let vk = contract.get_risc_zero_universal_vk();
+
+        // Helper to check if a byte array (interpreted as LE integer) is valid
+        let is_valid_field_element = |bytes: &[u8; 32]| -> bool {
+            let value = BigUint::from_bytes_le(bytes);
+            value < bn254_modulus
+        };
+
+        // Check alpha_g1
+        assert!(
+            is_valid_field_element(&vk.alpha_g1.x),
+            "alpha_g1.x is not a valid BN254 field element: {}",
+            BigUint::from_bytes_le(&vk.alpha_g1.x)
+        );
+        assert!(
+            is_valid_field_element(&vk.alpha_g1.y),
+            "alpha_g1.y is not a valid BN254 field element: {}",
+            BigUint::from_bytes_le(&vk.alpha_g1.y)
+        );
+
+        // Check beta_g2
+        assert!(is_valid_field_element(&vk.beta_g2.x_c0), "beta_g2.x_c0 invalid");
+        assert!(is_valid_field_element(&vk.beta_g2.x_c1), "beta_g2.x_c1 invalid");
+        assert!(is_valid_field_element(&vk.beta_g2.y_c0), "beta_g2.y_c0 invalid");
+        assert!(is_valid_field_element(&vk.beta_g2.y_c1), "beta_g2.y_c1 invalid");
+
+        // Check gamma_g2
+        assert!(is_valid_field_element(&vk.gamma_g2.x_c0), "gamma_g2.x_c0 invalid");
+        assert!(is_valid_field_element(&vk.gamma_g2.x_c1), "gamma_g2.x_c1 invalid");
+        assert!(is_valid_field_element(&vk.gamma_g2.y_c0), "gamma_g2.y_c0 invalid");
+        assert!(is_valid_field_element(&vk.gamma_g2.y_c1), "gamma_g2.y_c1 invalid");
+
+        // Check delta_g2
+        assert!(is_valid_field_element(&vk.delta_g2.x_c0), "delta_g2.x_c0 invalid");
+        assert!(is_valid_field_element(&vk.delta_g2.x_c1), "delta_g2.x_c1 invalid");
+        assert!(is_valid_field_element(&vk.delta_g2.y_c0), "delta_g2.y_c0 invalid");
+        assert!(is_valid_field_element(&vk.delta_g2.y_c1), "delta_g2.y_c1 invalid");
+
+        // Check all IC points
+        for (i, point) in vk.ic.iter().enumerate() {
+            assert!(
+                is_valid_field_element(&point.x),
+                "IC[{}].x is not a valid BN254 field element: {}",
+                i,
+                BigUint::from_bytes_le(&point.x)
+            );
+            assert!(
+                is_valid_field_element(&point.y),
+                "IC[{}].y is not a valid BN254 field element: {}",
+                i,
+                BigUint::from_bytes_le(&point.y)
+            );
+        }
+
+        // SUCCESS: All field elements are valid!
+    }
+
+    #[test]
+    fn test_vk_byte_order_consistency() {
+        // This test verifies that our VK constants are correctly reversed
+        // from big-endian (RISC Zero format) to little-endian (NEAR interpretation)
+
+        let owner: AccountId = "owner.near".parse().unwrap();
+        let context = get_context(owner.clone());
+        testing_env!(context.build());
+
+        let contract = ZkVerifier::new(owner);
+        let vk = contract.get_risc_zero_universal_vk();
+
+        // Test case: IC[1].x
+        // Original big-endian (from risc0_vk.json): "0x0707b920bc978c02f292fae2036e057be54294114ccc3c8769d883f688a1423f"
+        // If incorrectly NOT reversed: bytes [07, 07, B9, 20, ..., 3F]
+        // When interpreted as LE int: 0x3F42A188... = 28,532,873,232,... > BN254 modulus ❌ INVALID!
+        //
+        // Correctly reversed: bytes [3F, 42, A1, 88, ..., 07, 07]
+        // When interpreted as LE int: 0x0707B920... = 3,179,835,575,... < BN254 modulus ✅ VALID!
+
+        use num_bigint::BigUint;
+
+        // IC[1].x should be the REVERSED version
+        let ic1_x_value = BigUint::from_bytes_le(&vk.ic[1].x);
+
+        // The reversed value should match the original big-endian hex when converted back
+        // Original: 0x0707b920bc978c02f292fae2036e057be54294114ccc3c8769d883f688a1423f
+        let expected_value = BigUint::parse_bytes(
+            b"0707b920bc978c02f292fae2036e057be54294114ccc3c8769d883f688a1423f",
+            16
+        ).unwrap();
+
+        assert_eq!(
+            ic1_x_value, expected_value,
+            "IC[1].x byte order is incorrect. Expected: {}, Got: {}",
+            expected_value, ic1_x_value
+        );
+
+        // Additionally verify it's a valid field element
+        let bn254_modulus = BigUint::from_bytes_le(&hex_literal::hex!(
+            "010000f093f5e1439170b97948e833285d588181b64550b829a031e1724e6430"
+        ));
+
+        assert!(
+            ic1_x_value < bn254_modulus,
+            "IC[1].x value {} is >= BN254 modulus {}",
+            ic1_x_value, bn254_modulus
+        );
     }
 
     #[test]

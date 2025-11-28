@@ -5,3 +5,7 @@
 # Path to RISC Zero circuit ELF binaries (built with `cargo risczero build`)
 # Uses relative path from project root - Cargo runs from workspace root
 ELF_DIR = { value = "target/riscv32im-risc0-zkvm-elf/docker", relative = true }
+
+[alias]
+# Build all RISC Zero circuits
+build-circuits = "risczero build -p income-proof -p payment-proof -p balance-proof"
