@@ -272,7 +272,81 @@ Where:
 - Test E: Different negation (negate C instead of A)
 - Test F: Different pair ordering
 
+### Test Results Matrix
+
+| Test | Variable | Configuration | G2 Validation | Pairing Result | Error Type |
+|------|----------|---------------|---------------|----------------|------------|
+| A    | VK G2 constants | SWAP storage | FAILED ❌     | N/A            | "invalid g2" |
+| B    | VK G2 constants | NO SWAP storage | PASSED ✅     | FALSE ❌       | Pairing failed |
+| C    | VK G1 constants | REVERSAL (BE) | FAILED ❌     | N/A            | "invalid fq" |
+| D    | VK G1 constants | NO REV (LE)   | PASSED ✅     | FALSE ❌       | Pairing failed |
+| E    | Pairing G2 serialization | SWAP all G2 | PASSED ✅     | FALSE ❌       | Pairing failed |
+
+### EMPIRICAL FINDINGS - VK Format
+
+**✅ VK G2 Constants:** NO SWAP (use as-is in c0, c1 order)
+**✅ VK G1 Constants:** NO REVERSAL (use little-endian as-is)
+
+**Test A (VK G2 SWAP):**
+- Applied SWAP to beta_g2, gamma_g2, delta_g2
+- Result: G2 validation FAILED with "invalid g2" error
+- Conclusion: VK G2 constants should NOT be swapped
+
+**Test C (VK G1 REVERSAL):**
+- Reversed alpha_g1 and IC points to big-endian
+- Also reversed proof A and C points to match
+- Result: FAILED with "invalid fq" error during scalar_mul_g1
+- Error: `AltBn128 invalid input: invalid fq: [7, 7, B9, 20, BC, 97, 8C, 2, ...]`
+- Conclusion: G1 points should stay in little-endian format
+
+**Test E (Pairing G2 Serialization SWAP):**
+- Swapped ALL G2 points during pairing serialization (in `append_pairing_pair`)
+- Proof B: parsed with SWAP, serialized with SWAP = **double-swap (back to original)**
+- VK G2: stored NO SWAP, serialized with SWAP = **single-swap**
+- Result: G2 validation PASSED ✅, Pairing returned FALSE ❌
+- Conclusion: G2 serialization format alone doesn't fix pairing failure
+
+### Current Configuration (Empirically Determined)
+
+**Proof Points:**
+- A (G1): Little-endian, no reversal
+- B (G2): SWAP (c1,c0) + NO REVERSAL (little-endian)
+- C (G1): Little-endian, no reversal
+
+**VK Constants:**
+- alpha_g1 (G1): Little-endian, no reversal
+- beta_g2, gamma_g2, delta_g2 (G2): NO SWAP (c0, c1 order)
+- IC points (G1): Little-endian, no reversal
+
+**Status:**
+- ✅ G2 validation: PASSES
+- ❌ Pairing check: FAILS (returns FALSE)
+
+### Analysis: Serialization Format Is Not The Issue
+
+**Key Pattern Observed:**
+ALL format variations (Tests B, D, E) pass G2 validation and all pre-pairing operations, but ALL return pairing FALSE. This consistent pattern across different serialization formats suggests:
+
+**The problem is NOT serialization format. Likely causes:**
+1. **Proof is invalid** - The proof itself may not verify correctly
+2. **VK mismatch** - The verification key doesn't match the circuit that generated the proof
+3. **Public input mismatch** - The journal parsing or public input computation is incorrect
+
+### CRITICAL NEXT STEP
+
+**Before testing more variations, we MUST verify the proof is valid using RISC Zero's own verification.**
+
+The proof-server generates proofs and claims they verify, but we need to independently verify using RISC Zero's Rust verifier to ensure:
+1. The receipt is a valid RISC Zero Groth16 proof
+2. The proof verifies against the RISC Zero universal VK
+3. The image ID and journal match
+
+If RISC Zero's own verifier accepts the proof, then the issue is in how we're calling NEAR's pairing precompile. If RISC Zero's verifier also rejects it, then the proof generation itself is broken.
+
 ### Current Status
-- ✅ Code reverted to working configuration (SWAP + NO REVERSAL)
-- ⏳ Ready to test VK constant format variations
-- 📋 Need to verify proof is valid using RISC Zero's verification first
+- ✅ Code has Test E configuration (pairing G2 serialization SWAP)
+- ✅ VK G2 format tested: NO SWAP in storage is correct
+- ✅ VK G1 format tested: NO REVERSAL (little-endian) is correct
+- ✅ Pairing G2 serialization tested: SWAP doesn't fix pairing
+- 🔴 **BLOCKING**: Need to verify proof with RISC Zero's verifier before continuing
+- ⏳ After proof verification: Test pairing pair ordering/negation if proof is valid

@@ -894,39 +894,46 @@ impl ZkVerifier {
         const IC5_Y: [u8; 32] = hex_literal::hex!("09e8690bbd01aa8782f608362fbbc88b2d4807b3070d8cfef625f474fffc4b21");
 
         // CRITICAL: VK constants above are stored in LITTLE-ENDIAN format (reversed).
-        // NEAR's alt_bn128 precompiles actually expect LITTLE-ENDIAN (NOT big-endian).
+        // NEAR's alt_bn128 precompiles expect LITTLE-ENDIAN.
         // Use the constants as-is (already in little-endian).
+        //
+        // EMPIRICALLY TESTED:
+        // - VK G1 REVERSAL: FAILED with "invalid fq" error
+        // - VK G1 NO REVERSAL: Use little-endian as-is
 
         Groth16VerificationKey {
             alpha_g1: G1Point {
-                x: ALPHA_G1_X,
-                y: ALPHA_G1_Y,
+                x: ALPHA_G1_X,  // Little-endian as-is
+                y: ALPHA_G1_Y,  // Little-endian as-is
             },
+            // VK G2 constants: NO SWAP (use as-is)
+            // These are stored in the contract, not from receipt
+            // Only proof B point (from receipt) needs SWAP
             beta_g2: G2Point {
-                x_c0: BETA_G2_X_C0,
-                x_c1: BETA_G2_X_C1,
-                y_c0: BETA_G2_Y_C0,
-                y_c1: BETA_G2_Y_C1,
+                x_c0: BETA_G2_X_C0,  // NO SWAP
+                x_c1: BETA_G2_X_C1,  // NO SWAP
+                y_c0: BETA_G2_Y_C0,  // NO SWAP
+                y_c1: BETA_G2_Y_C1,  // NO SWAP
             },
             gamma_g2: G2Point {
-                x_c0: GAMMA_G2_X_C0,
-                x_c1: GAMMA_G2_X_C1,
-                y_c0: GAMMA_G2_Y_C0,
-                y_c1: GAMMA_G2_Y_C1,
+                x_c0: GAMMA_G2_X_C0,  // NO SWAP
+                x_c1: GAMMA_G2_X_C1,  // NO SWAP
+                y_c0: GAMMA_G2_Y_C0,  // NO SWAP
+                y_c1: GAMMA_G2_Y_C1,  // NO SWAP
             },
             delta_g2: G2Point {
-                x_c0: DELTA_G2_X_C0,
-                x_c1: DELTA_G2_X_C1,
-                y_c0: DELTA_G2_Y_C0,
-                y_c1: DELTA_G2_Y_C1,
+                x_c0: DELTA_G2_X_C0,  // NO SWAP
+                x_c1: DELTA_G2_X_C1,  // NO SWAP
+                y_c0: DELTA_G2_Y_C0,  // NO SWAP
+                y_c1: DELTA_G2_Y_C1,  // NO SWAP
             },
             ic: vec![
-                G1Point { x: IC0_X, y: IC0_Y },
-                G1Point { x: IC1_X, y: IC1_Y },
-                G1Point { x: IC2_X, y: IC2_Y },
-                G1Point { x: IC3_X, y: IC3_Y },
-                G1Point { x: IC4_X, y: IC4_Y },
-                G1Point { x: IC5_X, y: IC5_Y },
+                G1Point { x: IC0_X, y: IC0_Y },  // Little-endian as-is
+                G1Point { x: IC1_X, y: IC1_Y },  // Little-endian as-is
+                G1Point { x: IC2_X, y: IC2_Y },  // Little-endian as-is
+                G1Point { x: IC3_X, y: IC3_Y },  // Little-endian as-is
+                G1Point { x: IC4_X, y: IC4_Y },  // Little-endian as-is
+                G1Point { x: IC5_X, y: IC5_Y },  // Little-endian as-is
             ],
         }
     }
@@ -1168,12 +1175,15 @@ impl ZkVerifier {
         buffer.extend_from_slice(&g1.x);
         buffer.extend_from_slice(&g1.y);
 
-        // Match groth16.rs format: c0,c1 order (NO swap)
-        // G2: x_c0 || x_c1 || y_c0 || y_c1 (128 bytes)
-        buffer.extend_from_slice(&g2.x_c0);  // real FIRST
-        buffer.extend_from_slice(&g2.x_c1);  // imaginary SECOND
-        buffer.extend_from_slice(&g2.y_c0);  // real FIRST
-        buffer.extend_from_slice(&g2.y_c1);  // imaginary SECOND
+        // TEST: SWAP VK G2 POINTS during pairing serialization
+        // Proof B is parsed with SWAP (c1 data in c0 field, c0 data in c1 field)
+        // So when serialized: sends c1 || c0 order to NEAR
+        // VK G2 points need to match this format
+        // G2: x_c1 || x_c0 || y_c1 || y_c0 (SWAPPED order)
+        buffer.extend_from_slice(&g2.x_c1);  // SWAP: imaginary FIRST
+        buffer.extend_from_slice(&g2.x_c0);  // SWAP: real SECOND
+        buffer.extend_from_slice(&g2.y_c1);  // SWAP: imaginary FIRST
+        buffer.extend_from_slice(&g2.y_c0);  // SWAP: real SECOND
     }
 
     fn record_verification(
