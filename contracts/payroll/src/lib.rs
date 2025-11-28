@@ -19,7 +19,7 @@ use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, UnorderedMap, Vector};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, ext_contract, near_bindgen, AccountId, BorshStorageKey, Gas, NearSchema, PanicOnDefault, Promise, PromiseOrValue, PromiseError};
+use near_sdk::{env, ext_contract, near_bindgen, AccountId, BorshStorageKey, Gas, NearSchema, NearToken, PanicOnDefault, Promise, PromiseOrValue, PromiseError};
 use sha2::{Digest, Sha256};
 
 /// Gas constants for cross-contract calls
@@ -43,6 +43,18 @@ pub enum DestinationChain {
     Bitcoin,
     /// NEAR (same chain, no bridge needed)
     Near,
+}
+
+/// External interface for wZEC Token contract
+#[ext_contract(ext_wzec)]
+pub trait ExtWzecToken {
+    fn ft_transfer_call(
+        &mut self,
+        receiver_id: AccountId,
+        amount: U128,
+        memo: Option<String>,
+        msg: String,
+    ) -> Promise;
 }
 
 /// External interface for Intents Adapter contract
@@ -592,20 +604,26 @@ impl PayrollContract {
             amount.0, employee_id, destination_address, destination_chain
         ));
 
-        // First transfer wZEC to intents adapter, then initiate withdrawal
-        // This is a two-step process:
-        // 1. Transfer wZEC to intents adapter
-        // 2. Intents adapter initiates cross-chain transfer
+        // Build withdrawal message: "withdrawal:chain:destination_address"
+        let chain_str = match destination_chain {
+            DestinationChain::Zcash => "zcash",
+            DestinationChain::Solana => "solana",
+            DestinationChain::Ethereum => "ethereum",
+            DestinationChain::Bitcoin => "bitcoin",
+            DestinationChain::Near => "near",
+        };
+        let withdrawal_msg = format!("withdrawal:{}:{}", chain_str, destination_address);
 
-        // For now, we call the intents adapter directly
-        // In production, this would be a ft_transfer_call flow
-        ext_intents_adapter::ext(intents_adapter.clone())
+        // Transfer wZEC to intents adapter with withdrawal details
+        // The intents adapter will handle the cross-chain transfer
+        ext_wzec::ext(self.wzec_token.clone())
             .with_static_gas(Gas::from_tgas(100))
-            .initiate_withdrawal(
-                employee_id.clone(),
-                destination_chain,
-                destination_address,
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .ft_transfer_call(
+                intents_adapter.clone(),
                 amount,
+                Some(format!("Employee withdrawal for {}", employee_id)),
+                withdrawal_msg,
             )
             .then(
                 Self::ext(env::current_account_id())
@@ -623,18 +641,37 @@ impl PayrollContract {
     ) -> String {
         match env::promise_result(0) {
             near_sdk::PromiseResult::Successful(result) => {
-                let withdrawal_id: String = serde_json::from_slice(&result)
-                    .unwrap_or_else(|_| "unknown".to_string());
+                // ft_transfer_call returns the refunded amount
+                let refund: U128 = serde_json::from_slice(&result).unwrap_or(U128(0));
+
+                if refund.0 > 0 {
+                    // Withdrawal was rejected or partially refunded, credit back to employee
+                    let balance = self.employee_balances.get(&employee_id).unwrap_or(0);
+                    self.employee_balances.insert(&employee_id, &(balance + refund.0));
+
+                    if refund.0 == amount.0 {
+                        env::log_str(&format!(
+                            "Cross-chain withdrawal rejected for {}, refunded {} wZEC",
+                            employee_id, refund.0
+                        ));
+                        return "rejected".to_string();
+                    } else {
+                        env::log_str(&format!(
+                            "Cross-chain withdrawal partially refunded for {}: {} wZEC",
+                            employee_id, refund.0
+                        ));
+                    }
+                }
 
                 env::log_str(&format!(
-                    "Cross-chain withdrawal initiated for {}: {} wZEC (ID: {})",
-                    employee_id, amount.0, withdrawal_id
+                    "Cross-chain withdrawal initiated for {}: {} wZEC (net: {})",
+                    employee_id, amount.0, amount.0 - refund.0
                 ));
 
-                withdrawal_id
+                "success".to_string()
             }
             _ => {
-                // Refund on failure
+                // Transfer call failed completely, refund full amount
                 let balance = self.employee_balances.get(&employee_id).unwrap_or(0);
                 self.employee_balances.insert(&employee_id, &(balance + amount.0));
 

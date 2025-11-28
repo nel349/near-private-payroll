@@ -1,0 +1,367 @@
+# NEAR Intents Integration - Implementation Progress
+
+**Last Updated:** 2025-11-27
+**Status:** Core Implementation Complete ✅ | Testing & Deployment In Progress 🚧
+
+---
+
+## Overview
+
+This document tracks the progress of integrating NEAR Intents protocol for cross-chain operations in the Private Payroll system, enabling:
+- Company deposits from Zcash and other chains
+- Employee withdrawals to Zcash (shielded), Solana, Ethereum, Bitcoin, and NEAR
+
+See [CROSS_CHAIN_INTENTS.md](./CROSS_CHAIN_INTENTS.md) for full architecture and usage details.
+
+---
+
+## ✅ Completed Tasks
+
+### 1. Intents Adapter Contract (`contracts/intents-adapter`)
+
+**Status:** ✅ COMPLETE & COMPILING
+
+- [x] Core contract structure with all storage types
+- [x] Added missing `NearSchema` derives for ABI generation:
+  - `PendingDeposit`
+  - `PendingWithdrawal`
+  - `ChainConfig`
+  - `DepositStatus`
+  - `WithdrawalStatus`
+- [x] Company deposit flow via `ft_on_transfer`
+- [x] **NEW:** Employee withdrawal flow via `ft_on_transfer` (message: `withdrawal:chain:address`)
+- [x] Chain configuration (Zcash, Solana, Ethereum, Bitcoin, NEAR)
+- [x] Address validation for all supported chains
+- [x] Relayer authorization and management
+- [x] Admin methods (owner-only)
+- [x] View methods for querying state
+- [x] Proper refund handling for failed operations
+- [x] NEAR destination support (direct transfers without bridging)
+- [x] Cross-chain intent creation for external chains
+- [x] Removed unused `GAS_FOR_RESOLVE` constant (cleanup)
+
+**Key Files:**
+- `contracts/intents-adapter/src/lib.rs` - Main contract (911 lines)
+- `contracts/intents-adapter/Cargo.toml` - Dependencies configured
+
+**Compilation:** ✅ `cargo check --target wasm32-unknown-unknown` passes
+
+---
+
+### 2. Integration Tests (`contracts/intents-adapter/tests/`)
+
+**Status:** ✅ COMPLETE
+
+Created comprehensive integration test suite using NEAR Workspaces:
+
+- [x] `test_initialization` - Contract deployment and initialization
+- [x] `test_relayer_management` - Adding/removing relayers, access control
+- [x] `test_chain_config` - Default configs, updating configs
+- [x] `test_token_management` - Adding/removing supported tokens
+- [x] `test_stats` - Contract statistics tracking
+- [x] `test_ownership_transfer` - Ownership transfers and permissions
+- [x] `test_update_contract_addresses` - Updating payroll/intents contract addresses
+
+**Key Files:**
+- `contracts/intents-adapter/tests/integration_test.rs` (428 lines)
+- `contracts/intents-adapter/Cargo.toml` - Added `near-workspaces` and `serde_json` dev dependencies
+
+**Test Results:** ✅ All 7 tests passing
+
+**Run Tests:** `cargo test -p intents-adapter --test integration_test`
+
+---
+
+### 3. Payroll Contract Updates
+
+**Status:** ✅ COMPLETE & COMPILING
+
+**Critical Fix:** Changed withdrawal flow from direct contract calls to proper token transfer flow.
+
+#### Before (❌ Incorrect):
+```rust
+// Called intents adapter directly without transferring tokens
+ext_intents_adapter::ext(adapter)
+    .initiate_withdrawal(employee_id, chain, address, amount)
+```
+
+#### After (✅ Correct):
+```rust
+// Transfer wZEC to intents adapter with withdrawal message
+ext_wzec::ext(wzec_token)
+    .ft_transfer_call(
+        intents_adapter,
+        amount,
+        Some("Employee withdrawal"),
+        "withdrawal:zcash:zs1..."  // Message format
+    )
+```
+
+**Changes Made:**
+- [x] Added `ext_wzec` external contract interface
+- [x] Updated `withdraw_via_intents` to use `ft_transfer_call`
+- [x] Build withdrawal message: `"withdrawal:chain:address"`
+- [x] Updated `on_withdrawal_initiated` callback to handle refunds from `ft_transfer_call`
+- [x] Added `NearToken` import for deposit attachment
+- [x] Proper balance refund on failed/rejected withdrawals
+
+**Key Files:**
+- `contracts/payroll/src/lib.rs` - Lines 48-58 (ext_wzec), 578-686 (withdrawal logic)
+
+**Compilation:** ✅ `cargo check --target wasm32-unknown-unknown` passes
+
+---
+
+### 4. SDK Integration (`sdk/src/`)
+
+**Status:** ✅ COMPLETE (Already Implemented)
+
+All intents functionality is fully implemented in the TypeScript SDK:
+
+- [x] `IntentsAdapterSDK` class with all methods
+- [x] Address validation (Zcash, Solana, Ethereum, Bitcoin, NEAR)
+- [x] Helper functions: `buildDepositMessage`, `parseWithdrawalId`
+- [x] View methods: `getPendingDeposit`, `getPendingWithdrawal`, `getChainConfig`, etc.
+- [x] Admin methods: `addRelayer`, `removeRelayer`, `updateChainConfig`, etc.
+- [x] Relayer methods: `confirmCrossChainDeposit`, `confirmWithdrawalComplete`
+- [x] `PrivatePayroll.setIntentsAdapter()` method (owner-only)
+- [x] `PrivatePayroll.getIntentsAdapter()` method
+- [x] `PrivatePayroll.withdrawViaIntents()` method (employee)
+- [x] All types exported in `index.ts`
+
+**Key Files:**
+- `sdk/src/intents.ts` (407 lines)
+- `sdk/src/payroll.ts` (setIntentsAdapter, getIntentsAdapter, withdrawViaIntents)
+- `sdk/src/types.ts` (Cross-chain types: lines 132-233)
+- `sdk/src/index.ts` (All exports configured)
+
+---
+
+## 🚧 In Progress / TODO
+
+### 5. End-to-End Tests
+
+**Status:** 🚧 NOT STARTED
+
+Need to create comprehensive E2E tests that span multiple contracts:
+
+- [ ] **Company Deposit Flow Test**
+  - Deploy: payroll, wzec-token, intents-adapter
+  - Company calls `wzec.ft_transfer_call(intents_adapter, "deposit:company.near")`
+  - Verify: wZEC forwarded to payroll, company balance updated
+  - Test: Cross-chain deposit tracking (with source chain/tx)
+  - Test: Refund on invalid company ID
+
+- [ ] **Employee Withdrawal Flow Test**
+  - Setup: Employee with balance in payroll contract
+  - Employee calls `payroll.withdraw_via_intents(amount, Zcash, "zs1...")`
+  - Verify: wZEC transferred from payroll to intents adapter
+  - Verify: Withdrawal record created with correct status
+  - Test: NEAR destination (direct transfer)
+  - Test: Cross-chain destination (intent creation)
+  - Test: Refund on invalid address
+  - Test: Refund on amount below minimum
+  - Test: Refund on disabled chain
+
+**Recommended File:** `contracts/intents-adapter/tests/e2e_flows_test.rs`
+
+---
+
+### 6. Deployment Script
+
+**Status:** 🚧 NOT STARTED
+
+Create deployment automation for testnet/mainnet:
+
+- [ ] Deploy intents-adapter contract
+- [ ] Initialize with owner, payroll, wzec addresses
+- [ ] Configure chain settings (fees, limits)
+- [ ] Add authorized relayers
+- [ ] Add supported tokens
+- [ ] Verify deployment
+
+**Recommended File:** `scripts/deploy-intents-adapter.sh` or `scripts/deploy-intents-adapter.js`
+
+**Dependencies:**
+- NEAR CLI or near-api-js
+- Contract WASM build
+- Configuration file with addresses/settings
+
+---
+
+### 7. Demo / Example Script
+
+**Status:** 🚧 NOT STARTED
+
+Create example showing complete cross-chain flows:
+
+- [ ] Initialize all contracts
+- [ ] Company deposits wZEC from "Zcash"
+- [ ] Company adds employee
+- [ ] Company pays employee
+- [ ] Employee withdraws to Zcash shielded address
+- [ ] Query withdrawal status
+- [ ] Relayer confirms completion
+
+**Recommended File:** `examples/cross-chain-payroll-demo.ts` or `examples/intents-demo.ts`
+
+---
+
+## Architecture Changes Summary
+
+### Message Flow (Withdrawal)
+
+```
+┌─────────────┐
+│  Employee   │ calls withdraw_via_intents(100 ZEC, Zcash, "zs1...")
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Payroll Contract                                               │
+│  1. Deducts balance                                            │
+│  2. Calls: wzec.ft_transfer_call(                              │
+│       intents_adapter,                                          │
+│       amount,                                                   │
+│       msg: "withdrawal:zcash:zs1..."                           │
+│    )                                                            │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  wZEC Token Contract                                            │
+│  - Transfers tokens to intents-adapter                         │
+│  - Calls intents_adapter.ft_on_transfer()                      │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Intents Adapter                                                │
+│  1. Parses message: "withdrawal:zcash:zs1..."                  │
+│  2. Validates: sender == payroll, chain config, address        │
+│  3. Creates PendingWithdrawal record                           │
+│  4. If NEAR: Direct ft_transfer                                │
+│     If cross-chain: ft_transfer_call to intents.near          │
+│  5. Returns 0 (success) or amount (refund)                     │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼ (if cross-chain)
+┌─────────────────────────────────────────────────────────────────┐
+│  NEAR Intents Protocol                                          │
+│  - Routes to appropriate bridge (Zcash PoA, etc.)              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Bridge / Destination Chain                                     │
+│  - Releases assets on Zcash, Solana, etc.                     │
+│  - Relayer calls confirm_withdrawal_complete()                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Testing Strategy
+
+### Unit Tests
+- ✅ Basic contract methods (in `lib.rs` `#[cfg(test)]`)
+- ✅ Chain address validation
+- ✅ Chain config initialization
+
+### Integration Tests
+- ✅ NEAR Workspaces sandbox tests (single contract)
+- ✅ Admin operations, relayer management
+- ✅ Stats tracking
+
+### End-to-End Tests
+- 🚧 TODO: Multi-contract flows (payroll + intents-adapter + wzec)
+- 🚧 TODO: Deposit flow validation
+- 🚧 TODO: Withdrawal flow validation
+- 🚧 TODO: Error/refund scenarios
+
+### Manual Testing
+- 🚧 TODO: Testnet deployment
+- 🚧 TODO: Real cross-chain operations
+
+---
+
+## Build & Test Commands
+
+```bash
+# Build intents-adapter contract
+cd contracts/intents-adapter
+cargo check --target wasm32-unknown-unknown
+
+# Build for deployment (requires cargo-near)
+cargo near build
+
+# Run integration tests
+cargo test -p intents-adapter --test integration_test
+
+# Run all tests
+cargo test -p intents-adapter
+
+# Build all contracts
+cd ../..
+cargo build --target wasm32-unknown-unknown --release
+```
+
+---
+
+## Known Issues & Limitations
+
+### Current Limitations:
+1. **No actual NEAR Intents integration** - Uses placeholder `intents.near` contract
+   - For production: Deploy/configure real NEAR Intents contract
+
+2. **No bridge relayer service** - Relayer confirmations are manual
+   - Need to implement automated relayer service
+
+3. **No encryption for withdrawal messages** - Addresses visible on-chain
+   - Consider encrypting sensitive withdrawal details
+
+4. **wZEC balance tracking is public** - Standard NEP-141 transparency
+   - See `docs/PRIVACY_ANALYSIS.md` for details
+
+### Security Considerations:
+- ✅ Only payroll contract can initiate withdrawals (enforced in `handle_withdrawal_transfer`)
+- ✅ Only owner can add relayers and configure chains
+- ✅ Only authorized relayers can confirm cross-chain operations
+- ✅ Address validation before processing withdrawals
+- ✅ Amount limits enforced (min/max per chain)
+- ⚠️  Relayers are trusted - use multi-sig or additional verification
+- ⚠️  Bridge contracts must be audited before mainnet
+
+---
+
+## Next Steps (Priority Order)
+
+1. **E2E Tests** - Validate complete flows work correctly
+2. **Deployment Script** - Prepare for testnet deployment
+3. **Demo Script** - Create reference implementation
+4. **Testnet Deployment** - Deploy and test on testnet
+5. **Relayer Service** - Implement automated bridge confirmations
+6. **Security Audit** - Third-party audit before mainnet
+
+---
+
+## Resources
+
+- **Architecture:** [docs/CROSS_CHAIN_INTENTS.md](./CROSS_CHAIN_INTENTS.md)
+- **Privacy Analysis:** [docs/PRIVACY_ANALYSIS.md](./PRIVACY_ANALYSIS.md)
+- **Project README:** [../README.md](../README.md)
+- **NEAR Intents Docs:** https://docs.near-intents.org
+- **Zcash Address Formats:** https://zcash.readthedocs.io/en/latest/rtd_pages/addresses.html
+
+---
+
+## Contributors
+
+- Initial implementation: Claude AI
+- Architecture design: Based on NEAR Intents protocol
+- Testing framework: NEAR Workspaces
+
+---
+
+**Last Verified:** 2025-11-27
+**Contract Versions:** All contracts on near-sdk 5.5.0+

@@ -35,7 +35,6 @@ use sha2::{Digest, Sha256};
 const GAS_FOR_FT_TRANSFER: Gas = Gas::from_tgas(30);
 const GAS_FOR_FT_TRANSFER_CALL: Gas = Gas::from_tgas(50);
 const GAS_FOR_CALLBACK: Gas = Gas::from_tgas(20);
-const GAS_FOR_RESOLVE: Gas = Gas::from_tgas(10);
 
 /// NEAR Intents contract on mainnet
 const INTENTS_CONTRACT: &str = "intents.near";
@@ -121,7 +120,7 @@ pub enum ZcashAddressType {
 }
 
 /// Pending deposit from cross-chain
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub struct PendingDeposit {
@@ -140,7 +139,7 @@ pub struct PendingDeposit {
 }
 
 /// Deposit status
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub enum DepositStatus {
@@ -151,7 +150,7 @@ pub enum DepositStatus {
 }
 
 /// Pending withdrawal to cross-chain
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub struct PendingWithdrawal {
@@ -174,7 +173,7 @@ pub struct PendingWithdrawal {
 }
 
 /// Withdrawal status
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub enum WithdrawalStatus {
@@ -186,7 +185,7 @@ pub enum WithdrawalStatus {
 }
 
 /// Chain configuration for cross-chain operations
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub struct ChainConfig {
@@ -345,10 +344,12 @@ impl IntentsAdapter {
 
     // ==================== COMPANY DEPOSIT OPERATIONS ====================
 
-    /// Handle incoming wZEC deposit for company payroll funding
-    /// Called via ft_transfer_call from wZEC contract
+    /// Handle incoming wZEC transfers via ft_transfer_call
+    /// Called from wZEC contract
     ///
-    /// Message format: "deposit:company_id" or "deposit:company_id:source_chain:source_tx"
+    /// Message formats:
+    /// - Deposit: "deposit:company_id" or "deposit:company_id:source_chain:source_tx"
+    /// - Withdrawal: "withdrawal:chain:destination_address"
     pub fn ft_on_transfer(
         &mut self,
         sender_id: AccountId,
@@ -365,10 +366,29 @@ impl IntentsAdapter {
 
         // Parse message
         let parts: Vec<&str> = msg.split(':').collect();
-        if parts.is_empty() || parts[0] != "deposit" {
-            // Refund if not a deposit message
+        if parts.is_empty() {
+            // Refund if empty message
             return PromiseOrValue::Value(amount);
         }
+
+        match parts[0] {
+            "deposit" => self.handle_deposit_transfer(sender_id, token_contract, amount, parts),
+            "withdrawal" => self.handle_withdrawal_transfer(sender_id, token_contract, amount, parts),
+            _ => {
+                // Unknown message type, refund
+                PromiseOrValue::Value(amount)
+            }
+        }
+    }
+
+    /// Handle deposit transfer
+    fn handle_deposit_transfer(
+        &mut self,
+        sender_id: AccountId,
+        token_contract: AccountId,
+        amount: U128,
+        parts: Vec<&str>,
+    ) -> PromiseOrValue<U128> {
 
         // Extract company ID
         let company_id: AccountId = parts.get(1)
@@ -410,6 +430,162 @@ impl IntentsAdapter {
             Self::ext(env::current_account_id())
                 .with_static_gas(GAS_FOR_CALLBACK)
                 .on_deposit_forwarded(company_id, amount)
+        ))
+    }
+
+    /// Handle withdrawal transfer from payroll contract
+    /// Message format: "withdrawal:chain:destination_address"
+    fn handle_withdrawal_transfer(
+        &mut self,
+        sender_id: AccountId,
+        token_contract: AccountId,
+        amount: U128,
+        parts: Vec<&str>,
+    ) -> PromiseOrValue<U128> {
+        // Only payroll contract can initiate withdrawals
+        if sender_id != self.payroll_contract {
+            env::log_str(&format!(
+                "Withdrawal rejected: only payroll contract can initiate, got {}",
+                sender_id
+            ));
+            return PromiseOrValue::Value(amount); // Refund
+        }
+
+        // Parse withdrawal details
+        let chain_str = parts.get(1).expect("Chain required in withdrawal message");
+        let destination_address = parts.get(2).expect("Destination address required in withdrawal message");
+
+        // Parse destination chain
+        let destination_chain: DestinationChain = match chain_str.to_lowercase().as_str() {
+            "zcash" => DestinationChain::Zcash,
+            "solana" => DestinationChain::Solana,
+            "ethereum" => DestinationChain::Ethereum,
+            "bitcoin" => DestinationChain::Bitcoin,
+            "near" => DestinationChain::Near,
+            _ => {
+                env::log_str(&format!("Unknown chain: {}", chain_str));
+                return PromiseOrValue::Value(amount); // Refund
+            }
+        };
+
+        // Validate chain config
+        let chain_config = match self.chain_configs.get(&destination_chain.chain_id().to_string()) {
+            Some(config) => config,
+            None => {
+                env::log_str(&format!("Chain not configured: {:?}", destination_chain));
+                return PromiseOrValue::Value(amount); // Refund
+            }
+        };
+
+        if !chain_config.withdrawal_enabled {
+            env::log_str(&format!("Withdrawals disabled for chain: {:?}", destination_chain));
+            return PromiseOrValue::Value(amount); // Refund
+        }
+
+        if amount.0 < chain_config.min_withdrawal {
+            env::log_str(&format!(
+                "Amount {} below minimum withdrawal {} for chain: {:?}",
+                amount.0, chain_config.min_withdrawal, destination_chain
+            ));
+            return PromiseOrValue::Value(amount); // Refund
+        }
+
+        if chain_config.max_withdrawal > 0 && amount.0 > chain_config.max_withdrawal {
+            env::log_str(&format!(
+                "Amount {} exceeds maximum withdrawal {} for chain: {:?}",
+                amount.0, chain_config.max_withdrawal, destination_chain
+            ));
+            return PromiseOrValue::Value(amount); // Refund
+        }
+
+        // Validate destination address
+        if !destination_chain.validate_address(destination_address) {
+            env::log_str(&format!(
+                "Invalid destination address: {} for chain: {:?}",
+                destination_address, destination_chain
+            ));
+            return PromiseOrValue::Value(amount); // Refund
+        }
+
+        // Generate withdrawal ID
+        self.withdrawal_nonce += 1;
+        let withdrawal_id = self.generate_withdrawal_id(&sender_id);
+
+        // Create pending withdrawal
+        let withdrawal = PendingWithdrawal {
+            initiator: sender_id.clone(),
+            destination_chain: destination_chain.clone(),
+            destination_address: destination_address.to_string(),
+            token: token_contract.clone(),
+            amount: amount.0,
+            created_at: env::block_timestamp(),
+            status: WithdrawalStatus::Pending,
+            intent_id: None,
+        };
+
+        self.pending_withdrawals.insert(&withdrawal_id, &withdrawal);
+        self.total_withdrawals += 1;
+
+        env::log_str(&format!(
+            "Withdrawal initiated: {} wZEC from {} to {} on {} (ID: {})",
+            amount.0, sender_id, destination_address, destination_chain.chain_id(), withdrawal_id
+        ));
+
+        // For NEAR destination, direct transfer
+        if destination_chain == DestinationChain::Near {
+            let recipient: AccountId = match destination_address.parse() {
+                Ok(addr) => addr,
+                Err(_) => {
+                    env::log_str(&format!("Invalid NEAR address: {}", destination_address));
+                    return PromiseOrValue::Value(amount); // Refund
+                }
+            };
+
+            let promise = ext_ft::ext(token_contract)
+                .with_static_gas(GAS_FOR_FT_TRANSFER)
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .ft_transfer(
+                    recipient,
+                    amount,
+                    Some(format!("Payroll withdrawal {}", withdrawal_id)),
+                );
+
+            return PromiseOrValue::Promise(promise.then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(GAS_FOR_CALLBACK)
+                    .on_near_withdrawal_complete(withdrawal_id)
+            ));
+        }
+
+        // For cross-chain, create intent via ft_transfer_call to intents contract
+        let intent_msg = serde_json::json!({
+            "action": "cross_chain_transfer",
+            "destination_chain": destination_chain.chain_id(),
+            "destination_address": destination_address,
+            "token": token_contract.to_string(),
+            "amount": amount.0.to_string(),
+        }).to_string();
+
+        let promise = ext_ft::ext(token_contract)
+            .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .ft_transfer_call(
+                self.intents_contract.clone(),
+                amount,
+                Some(format!("Cross-chain withdrawal {}", withdrawal_id)),
+                intent_msg,
+            );
+
+        // Update status to IntentCreated
+        if let Some(mut w) = self.pending_withdrawals.get(&withdrawal_id) {
+            w.status = WithdrawalStatus::IntentCreated;
+            self.pending_withdrawals.insert(&withdrawal_id, &w);
+        }
+
+        PromiseOrValue::Promise(promise.then(
+            Self::ext(env::current_account_id())
+                .with_static_gas(GAS_FOR_CALLBACK)
+                .on_intent_created(withdrawal_id)
         ))
     }
 
