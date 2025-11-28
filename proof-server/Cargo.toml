@@ -24,9 +24,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bincode = "1.3"
 
-# RISC Zero (must match circuit versions)
-risc0-zkvm = { version = "3.0", features = ["prove"] }
-risc0-groth16 = { version = "3.0", features = ["prove"] }
+# RISC Zero (must match circuit versions) - Pinned to 3.0.3 for version alignment
+risc0-zkvm = { version = "=3.0.3", features = ["prove"] }
+risc0-groth16 = { version = "=3.0.3", features = ["prove"] }
 
 # Cryptography
 sha2 = "0.10"

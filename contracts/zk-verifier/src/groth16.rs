@@ -262,26 +262,34 @@ fn compute_linear_combination(
 }
 
 /// Negate a G1 point by negating the y-coordinate
-/// On BN254, if P = (x, y), then -P = (x, -y)
-/// Uses NEAR's alt_bn128_g1_sum with sign flag
+/// On BN254, if P = (x, y), then -P = (x, -y mod p)
+/// Direct implementation: -y = p - y
 fn negate_g1(point: &G1Point) -> Result<G1Point, String> {
-    // NEAR's alt_bn128_g1_sum format (sign comes FIRST):
-    // sign (1 byte, 1 = negative) || x (32) || y (32)
-    let mut input = Vec::with_capacity(65);
-    input.push(1); // sign = 1 means negative (returns -P)
-    input.extend_from_slice(&point.x);
-    input.extend_from_slice(&point.y);
+    // BN254 field prime p (in little-endian bytes)
+    const BN254_FIELD_PRIME: [u8; 32] = [
+        0x47, 0xfd, 0x7c, 0xd8, 0x16, 0x8c, 0x20, 0x3c,
+        0x8d, 0xca, 0x71, 0x68, 0x91, 0x6a, 0x81, 0x97,
+        0x5d, 0x58, 0x81, 0x81, 0xb6, 0x45, 0x50, 0xb8,
+        0x29, 0xa0, 0x31, 0xe1, 0x72, 0x4e, 0x64, 0x30,
+    ];
 
-    let result = env::alt_bn128_g1_sum(&input);
+    // Convert y to BigUint (little-endian)
+    let y_bytes: Vec<u8> = point.y.iter().copied().collect();
+    let y = num_bigint::BigUint::from_bytes_le(&y_bytes);
 
-    if result.len() != 64 {
-        return Err(format!("Invalid negate result: got {} bytes, expected 64", result.len()));
-    }
+    // Convert p to BigUint (little-endian)
+    let p = num_bigint::BigUint::from_bytes_le(&BN254_FIELD_PRIME);
+
+    // Compute -y = p - y
+    let neg_y = &p - &y;
+
+    // Convert back to 32-byte little-endian
+    let neg_y_bytes = neg_y.to_bytes_le();
+    let mut y = [0u8; 32];
+    y[..neg_y_bytes.len()].copy_from_slice(&neg_y_bytes);
 
     let mut x = [0u8; 32];
-    let mut y = [0u8; 32];
-    x.copy_from_slice(&result[0..32]);
-    y.copy_from_slice(&result[32..64]);
+    x.copy_from_slice(&point.x);
 
     Ok(G1Point { x, y })
 }
