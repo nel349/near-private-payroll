@@ -903,26 +903,27 @@ impl ZkVerifier {
                 x: ALPHA_G1_X,  // Little-endian as-is
                 y: ALPHA_G1_Y,  // Little-endian as-is
             },
-            // VK G2 constants: NO SWAP (use as-is)
-            // These are stored in the contract, not from receipt
-            // Only proof B point (from receipt) needs SWAP
+            // VK G2 constants: Use as-is from Ethereum constants
+            // These have: c0=imaginary, c1=real (Ethereum convention)
+            // Proof B from RISC Zero has: c0=real, c1=imaginary
+            // Swap will happen during serialization to normalize
             beta_g2: G2Point {
-                x_c0: BETA_G2_X_C0,  // NO SWAP
-                x_c1: BETA_G2_X_C1,  // NO SWAP
-                y_c0: BETA_G2_Y_C0,  // NO SWAP
-                y_c1: BETA_G2_Y_C1,  // NO SWAP
+                x_c0: BETA_G2_X_C0,  // imaginary (from BETA_X2)
+                x_c1: BETA_G2_X_C1,  // real (from BETA_X1)
+                y_c0: BETA_G2_Y_C0,  // imaginary (from BETA_Y2)
+                y_c1: BETA_G2_Y_C1,  // real (from BETA_Y1)
             },
             gamma_g2: G2Point {
-                x_c0: GAMMA_G2_X_C0,  // NO SWAP
-                x_c1: GAMMA_G2_X_C1,  // NO SWAP
-                y_c0: GAMMA_G2_Y_C0,  // NO SWAP
-                y_c1: GAMMA_G2_Y_C1,  // NO SWAP
+                x_c0: GAMMA_G2_X_C0,  // imaginary
+                x_c1: GAMMA_G2_X_C1,  // real
+                y_c0: GAMMA_G2_Y_C0,  // imaginary
+                y_c1: GAMMA_G2_Y_C1,  // real
             },
             delta_g2: G2Point {
-                x_c0: DELTA_G2_X_C0,  // NO SWAP
-                x_c1: DELTA_G2_X_C1,  // NO SWAP
-                y_c0: DELTA_G2_Y_C0,  // NO SWAP
-                y_c1: DELTA_G2_Y_C1,  // NO SWAP
+                x_c0: DELTA_G2_X_C0,  // imaginary
+                x_c1: DELTA_G2_X_C1,  // real
+                y_c0: DELTA_G2_Y_C0,  // imaginary
+                y_c1: DELTA_G2_Y_C1,  // real
             },
             ic: vec![
                 G1Point { x: IC0_X, y: IC0_Y },  // Little-endian as-is
@@ -1180,13 +1181,13 @@ impl ZkVerifier {
         buffer.extend_from_slice(&g1.y);
 
         // G2: x_c0 || x_c1 || y_c0 || y_c1 (128 bytes)
-        // NO SWAP: Use fields as-is
-        // Both Proof B and VK G2 have: c0 = imaginary, c1 = real
-        // Serializing as c0, c1 sends: imaginary || real (NEAR's expected format)
-        buffer.extend_from_slice(&g2.x_c0);  // imaginary component
-        buffer.extend_from_slice(&g2.x_c1);  // real component
-        buffer.extend_from_slice(&g2.y_c0);  // imaginary component
-        buffer.extend_from_slice(&g2.y_c1);  // real component
+        // Send as-is - NO SWAP during serialization
+        // Proof.b already has SWAP during parsing (groth16.rs)
+        // VK G2 has NO SWAP (used as-is from constants)
+        buffer.extend_from_slice(&g2.x_c0);
+        buffer.extend_from_slice(&g2.x_c1);
+        buffer.extend_from_slice(&g2.y_c0);
+        buffer.extend_from_slice(&g2.y_c1);
     }
 
     fn record_verification(

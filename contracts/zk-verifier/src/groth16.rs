@@ -224,10 +224,6 @@ pub fn verify_groth16(
     env::log_str(&format!("=== PAIRING RESULT: {} ===", result));
     if !result {
         env::log_str("VERIFICATION FAILED - pairing check returned false");
-        env::log_str("This means either:");
-        env::log_str("  1. Proof is invalid for these public inputs");
-        env::log_str("  2. Public input computation is wrong");
-        env::log_str("  3. VK doesn't match the proof");
     } else {
         env::log_str("VERIFICATION SUCCESS - pairing check passed!");
     }
