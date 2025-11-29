@@ -5,6 +5,9 @@ edition = "2021"
 description = "ZK Proof Generation Server with TEE Support"
 license = "MIT"
 
+[lib]
+name = "proof_server"
+path = "src/lib.rs"
 
 [[bin]]
 name = "proof-server"
@@ -63,3 +66,7 @@ default = []
 tee = []
 # Development mode - skip actual proof generation
 dev-mode = []
+
+[[bin]]
+name = "print_control_ids"
+path = "../tmp/print_control_ids.rs"

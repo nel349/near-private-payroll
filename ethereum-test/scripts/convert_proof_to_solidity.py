@@ -8,10 +8,9 @@ import json
 import sys
 
 def bytes_to_uint256_be(data):
-    """Convert 32-byte little-endian to big-endian uint256"""
-    # Our data is stored little-endian, Ethereum expects big-endian
-    reversed_bytes = bytes(reversed(data))
-    return int.from_bytes(reversed_bytes, 'big')
+    """Convert 32-byte big-endian data to uint256"""
+    # Data from Seal.to_vec() is already big-endian, just convert directly
+    return int.from_bytes(data, 'big')
 
 def main():
     # Load our test proof
@@ -23,12 +22,17 @@ def main():
 
     print("=== RISC Zero Proof → Ethereum Solidity Format ===\n")
 
-    # Parse receipt structure (464 bytes total)
-    # [image_id (32)] [claim_digest (32)] [seal (256)] [journal (144)]
+    # Parse receipt structure (468 bytes total with selector)
+    # [image_id (32)] [claim_digest (32)] [selector (4)] [seal (256)] [journal (144)]
     image_id = receipt_bytes[0:32]
     claim_digest = receipt_bytes[32:64]
-    seal = receipt_bytes[64:320]
-    journal = receipt_bytes[320:464]
+    selector = receipt_bytes[64:68]
+    seal = receipt_bytes[68:324]
+    journal = receipt_bytes[324:468]
+
+    print(f"Selector: {selector.hex()}")
+    print(f"Receipt size: {len(receipt_bytes)} bytes")
+    print()
 
     # Parse seal (256 bytes): [A (64)] [B (128)] [C (64)]
     # A: G1 point [x (32), y (32)]

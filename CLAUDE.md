@@ -97,9 +97,10 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 - All circuits generate Groth16 proofs locally (no Bonsai needed)
 
 **Proof Server**: ✅ Fully implemented
-- Local STARK + Groth16 proof generation
+- Local Groth16 proof generation using `ProverOpts::groth16()` (RISC Zero v3.0.4)
 - REST API for proof generation
 - Verification key and image ID registration tools
+- ✅ Ethereum verification working (see `docs/RISC0_GROTH16_INVESTIGATION.md`)
 
 **SDK**: ✅ Initial implementation
 - TypeScript interfaces for all contracts
@@ -109,6 +110,7 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 - NEAR Workspaces integration tests
 - VK registration tests
 - Image ID registration tests
+- ✅ Ethereum Groth16 verification tests (passing)
 
 ## TODO
 
@@ -142,6 +144,9 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 - Guest programs use `#![no_main]` and `#![no_std]`
 - Journal commits are public outputs
 - Image ID is hash of circuit
+- **CRITICAL**: Use `ProverOpts::groth16()` NOT manual `shrink_wrap()` for correct seal format
+- Seal format: [selector (4)] + [proof points (256)] - see `docs/RISC0_GROTH16_INVESTIGATION.md`
+- v3.0.x selector: `0x73c457ba`, v5.0.x selector: `0xa7b87ed1`
 
 ## Privacy Analysis
 

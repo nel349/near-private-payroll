@@ -281,89 +281,42 @@ impl ProverService {
     ///
     /// **CRITICAL**: RISC Zero uses BIG-ENDIAN, NEAR's alt_bn128 is EIP-197 compatible (BIG-ENDIAN)
     /// No byte reversal needed - both systems use big-endian encoding.
-    fn convert_seal_to_fixed_format(seal: &risc0_groth16::Seal) -> Result<Vec<u8>, ProverError> {
-        let mut result = Vec::with_capacity(256);
+    /// Convert RISC Zero Groth16 seal to standard format with selector prefix.
+    ///
+    /// Uses RISC Zero's official serialization:
+    /// 1. Seal.to_vec() - Returns 256 bytes in big-endian format
+    /// 2. Adds 4-byte selector prefix from Groth16ReceiptVerifierParameters
+    ///
+    /// Result: [selector (4)] + [seal (256)] = 260 bytes
+    fn encode_seal_with_selector(seal: &risc0_groth16::Seal) -> Result<Vec<u8>, ProverError> {
+        use risc0_zkvm::{Groth16ReceiptVerifierParameters, sha::Digestible};
 
-        // Helper function to reverse and add bytes
-        let add_reversed = |res: &mut Vec<u8>, vec: &Vec<u8>, expected_len: usize| -> Result<(), ProverError> {
-            if vec.len() != expected_len {
-                return Err(ProverError::SerializationError(format!(
-                    "Expected {} bytes, got {}", expected_len, vec.len()
-                )));
-            }
-            let mut reversed = vec.clone();
-            reversed.reverse();
-            res.extend_from_slice(&reversed);
-            Ok(())
-        };
+        // Get seal bytes using RISC Zero's built-in serialization (256 bytes, big-endian)
+        let seal_bytes = seal.to_vec();
 
-        // Helper function to add bytes without reversing
-        let add_bytes = |res: &mut Vec<u8>, vec: &Vec<u8>, expected_len: usize| -> Result<(), ProverError> {
-            if vec.len() != expected_len {
-                return Err(ProverError::SerializationError(format!(
-                    "Expected {} bytes, got {}", expected_len, vec.len()
-                )));
-            }
-            res.extend_from_slice(vec);
-            Ok(())
-        };
-
-        // Point A (G1): [x, y] - BIG-ENDIAN (no reversal needed)
-        if seal.a.len() != 2 {
-            return Err(ProverError::SerializationError(format!(
-                "Invalid G1 point A: expected 2 coordinates, got {}",
-                seal.a.len()
-            )));
-        }
-        add_reversed(&mut result, &seal.a[0], 32)?; // A.x - LITTLE-ENDIAN
-        add_reversed(&mut result, &seal.a[1], 32)?; // A.y - LITTLE-ENDIAN
-
-        // Point B (G2): [[x_c0, x_c1], [y_c0, y_c1]]
-        // BIG-ENDIAN (no reversal) - NEAR uses EIP-197 compatible alt_bn128
-        if seal.b.len() != 2 {
-            return Err(ProverError::SerializationError(format!(
-                "Invalid G2 point B: expected 2 Fp2 elements, got {}",
-                seal.b.len()
-            )));
-        }
-        if seal.b[0].len() != 2 || seal.b[1].len() != 2 {
-            return Err(ProverError::SerializationError(
-                "Invalid G2 point B: Fp2 elements must have 2 components each".to_string(),
-            ));
-        }
-
-        eprintln!("=== PROOF B POINT DEBUG ===");
-        eprintln!("seal.b[0][0] (x_c0 real) BE: {}", hex::encode(&seal.b[0][0]));
-        eprintln!("seal.b[0][1] (x_c1 imag) BE: {}", hex::encode(&seal.b[0][1]));
-        eprintln!("seal.b[1][0] (y_c0 real) BE: {}", hex::encode(&seal.b[1][0]));
-        eprintln!("seal.b[1][1] (y_c1 imag) BE: {}", hex::encode(&seal.b[1][1]));
-
-        // Match groth16.rs format: c0,c1 order (NO swap), but with LITTLE-ENDIAN reversal
-        // Add Point B in LITTLE-ENDIAN with standard Fq2 ordering
-        add_reversed(&mut result, &seal.b[0][0], 32)?; // B.x_c0 (real) FIRST - LITTLE-ENDIAN
-        add_reversed(&mut result, &seal.b[0][1], 32)?; // B.x_c1 (imaginary) SECOND - LITTLE-ENDIAN
-        add_reversed(&mut result, &seal.b[1][0], 32)?; // B.y_c0 (real) FIRST - LITTLE-ENDIAN
-        add_reversed(&mut result, &seal.b[1][1], 32)?; // B.y_c1 (imaginary) SECOND - LITTLE-ENDIAN
-
-        eprintln!("Sent proof B with Fq2 components in c0,c1 order (NO swap) in LITTLE-ENDIAN");
-
-        // Point C (G1): [x, y] - BIG-ENDIAN (no reversal needed)
-        if seal.c.len() != 2 {
-            return Err(ProverError::SerializationError(format!(
-                "Invalid G1 point C: expected 2 coordinates, got {}",
-                seal.c.len()
-            )));
-        }
-        add_reversed(&mut result, &seal.c[0], 32)?; // C.x - LITTLE-ENDIAN
-        add_reversed(&mut result, &seal.c[1], 32)?; // C.y - LITTLE-ENDIAN
-
-        // Verify total length
-        if result.len() != 256 {
+        if seal_bytes.len() != 256 {
             return Err(ProverError::SerializationError(format!(
                 "Invalid seal size: expected 256 bytes, got {}",
-                result.len()
+                seal_bytes.len()
             )));
         }
+
+        // Get selector from verifier parameters (first 4 bytes of parameters digest)
+        let verifier_params = Groth16ReceiptVerifierParameters::default();
+        let params_digest = verifier_params.digest();
+        let selector = &params_digest.as_bytes()[..4];
+
+        // Construct: [selector (4)] + [seal (256)]
+        let mut result = Vec::with_capacity(260);
+        result.extend_from_slice(selector);
+        result.extend_from_slice(&seal_bytes);
+
+        info!(
+            "Encoded Groth16 seal: selector={}, seal={} bytes, total={} bytes",
+            hex::encode(selector),
+            seal_bytes.len(),
+            result.len()
+        );
 
         Ok(result)
     }
@@ -504,69 +457,65 @@ impl ProverService {
 
         // Get the prover and generate proof
         let prover = default_prover();
-        info!("Starting STARK proof generation...");
+        info!("Generating Groth16 proof directly (this takes ~2 minutes)...");
 
-        // Generate succinct STARK proof first
+        // Use ProverOpts::groth16() to generate proof directly to Groth16 format
+        // This is the high-level API that handles all the conversions internally
         let prove_info = prover
             .prove_with_ctx(
                 env,
                 &VerifierContext::default(),
                 &elf,
-                &ProverOpts::succinct(),
+                &ProverOpts::groth16(),
             )
             .map_err(|e| ProverError::GenerationFailed(format!("Prover error: {}", e)))?;
 
         let receipt = prove_info.receipt;
         info!(
-            "STARK proof generated successfully, journal size: {} bytes",
+            "Groth16 proof generated successfully, journal size: {} bytes",
             receipt.journal.bytes.len()
         );
 
         // Get image ID from receipt
         let image_id = self.get_image_id(proof_type);
 
-        // Extract the succinct receipt
-        let succinct_receipt = receipt.inner.succinct().map_err(|e| {
-            ProverError::GenerationFailed(format!("Receipt is not succinct format: {}", e))
+        // Extract the Groth16 receipt
+        let groth16_receipt = receipt.inner.groth16().map_err(|e| {
+            ProverError::GenerationFailed(format!("Receipt is not Groth16 format: {}", e))
         })?;
 
-        // Convert to identity_p254 format (required for Groth16)
-        info!("Converting to identity_p254 format...");
-        let identity_receipt = risc0_zkvm::recursion::identity_p254(succinct_receipt)
-            .map_err(|e| ProverError::GenerationFailed(format!("identity_p254 conversion failed: {}", e)))?;
-
-        // Get seal bytes in the correct format
-        info!("Converting STARK proof to Groth16 via shrink_wrap (this takes ~2 minutes)...");
-        let seal_bytes = identity_receipt.get_seal_bytes();
-
-        // Call shrink_wrap to convert to Groth16
-        let groth16_seal = risc0_groth16::prove::shrink_wrap(&seal_bytes)
-            .map_err(|e| ProverError::GenerationFailed(format!("Groth16 conversion failed: {}", e)))?;
-
-        // Convert seal to fixed 256-byte format expected by NEAR contract
-        let seal_bytes = Self::convert_seal_to_fixed_format(&groth16_seal)?;
-
-        // Compute claim digest (required for RISC Zero universal Groth16 verification)
+        // The Groth16 receipt already has the seal in the correct format
+        // Format: [selector (4)] + [seal_bytes (ABI-encoded)]
         use risc0_zkvm::sha::Digestible;
-        let claim_digest = identity_receipt.claim.digest();
+        let selector = &groth16_receipt.verifier_parameters.as_bytes()[..4];
+
+        // Construct encoded seal: selector + seal bytes
+        let mut encoded_seal = Vec::with_capacity(4 + groth16_receipt.seal.len());
+        encoded_seal.extend_from_slice(selector);
+        encoded_seal.extend_from_slice(groth16_receipt.seal.as_ref());
+
+        // Get claim digest from the receipt
+        let claim = receipt.claim()
+            .map_err(|e| ProverError::GenerationFailed(format!("Failed to get claim: {}", e)))?;
+        let claim_digest = claim.digest();
         let claim_digest_bytes: [u8; 32] = claim_digest.as_bytes().try_into()
             .map_err(|_| ProverError::GenerationFailed("Invalid claim digest size".to_string()))?;
 
         info!(
             "Groth16 proof generated: {} bytes (image_id: {}, claim_digest: {}, seal: {}, journal: {})",
-            image_id.len() + claim_digest_bytes.len() + seal_bytes.len() + receipt.journal.bytes.len(),
+            image_id.len() + claim_digest_bytes.len() + encoded_seal.len() + receipt.journal.bytes.len(),
             image_id.len(),
             claim_digest_bytes.len(),
-            seal_bytes.len(),
+            encoded_seal.len(),
             receipt.journal.bytes.len()
         );
 
-        // Package: image_id (32) + claim_digest (32) + seal (256) + journal (raw bytes from RISC Zero)
-        // The journal is already in the correct raw format - just pass it through
+        // Package using RISC Zero standard format:
+        // [image_id (32)] + [claim_digest (32)] + [selector+seal (260)] + [journal (raw bytes)]
         let mut proof_bytes = Vec::new();
         proof_bytes.extend_from_slice(&image_id);
         proof_bytes.extend_from_slice(&claim_digest_bytes);
-        proof_bytes.extend_from_slice(&seal_bytes);
+        proof_bytes.extend_from_slice(&encoded_seal);
         proof_bytes.extend_from_slice(&receipt.journal.bytes);
 
         Ok((proof_bytes, image_id, receipt.journal.bytes.clone()))

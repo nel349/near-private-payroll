@@ -43,8 +43,10 @@ fi
 echo "Building ${#CIRCUITS[@]} circuit(s)..."
 echo ""
 
-# Store ImageIDs for later display
-declare -A IMAGE_IDS
+# Store ImageIDs for later display (Bash 3.2 compatible)
+# Use parallel indexed arrays instead of associative arrays
+CIRCUIT_NAMES=()
+CIRCUIT_IMAGE_IDS=()
 
 for circuit in "${CIRCUITS[@]}"; do
     CIRCUIT_DIR="$CIRCUITS_DIR/$circuit"
@@ -85,7 +87,8 @@ for circuit in "${CIRCUITS[@]}"; do
     IMAGE_ID=$(echo "$BUILD_OUTPUT" | grep -o 'ImageID: [a-f0-9]*' | head -1 | cut -d' ' -f2)
 
     if [ -n "$IMAGE_ID" ]; then
-        IMAGE_IDS[$circuit]=$IMAGE_ID
+        CIRCUIT_NAMES+=("$circuit")
+        CIRCUIT_IMAGE_IDS+=("$IMAGE_ID")
         echo "  ImageID: $IMAGE_ID"
     else
         echo "  WARNING: Could not extract ImageID from build output"
@@ -100,14 +103,16 @@ echo ""
 echo "Circuit Image IDs:"
 echo ""
 
-for circuit in "${CIRCUITS[@]}"; do
+# Iterate through built circuits using indices
+for i in "${!CIRCUIT_NAMES[@]}"; do
+    circuit="${CIRCUIT_NAMES[$i]}"
+    image_id="${CIRCUIT_IMAGE_IDS[$i]}"
     ELF_FILE="$TARGET_DIR/${circuit}.bin"
+
     if [ -f "$ELF_FILE" ]; then
         echo "$circuit:"
         echo "  ELF:     $ELF_FILE"
-        if [ -n "${IMAGE_IDS[$circuit]}" ]; then
-            echo "  ImageID: ${IMAGE_IDS[$circuit]}"
-        fi
+        echo "  ImageID: $image_id"
         echo ""
     fi
 done
@@ -120,15 +125,16 @@ echo ""
 echo "JSON format:"
 echo "{"
 first=true
-for circuit in "${CIRCUITS[@]}"; do
-    if [ -n "${IMAGE_IDS[$circuit]}" ]; then
-        if [ "$first" = true ]; then
-            first=false
-        else
-            echo ","
-        fi
-        echo -n "  \"$circuit\": \"${IMAGE_IDS[$circuit]}\""
+for i in "${!CIRCUIT_NAMES[@]}"; do
+    circuit="${CIRCUIT_NAMES[$i]}"
+    image_id="${CIRCUIT_IMAGE_IDS[$i]}"
+
+    if [ "$first" = true ]; then
+        first=false
+    else
+        echo ","
     fi
+    echo -n "  \"$circuit\": \"$image_id\""
 done
 echo ""
 echo "}"
