@@ -168,3 +168,4 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 - NEP-141 Standard: https://nomicon.io/Standards/Tokens/FungibleToken
 - NEAR Workspaces: https://github.com/near/workspaces-rs
 - Privacy Analysis: `docs/PRIVACY_ANALYSIS.md`
+- **RISC Zero Groth16 Investigation**: `docs/RISC0_GROTH16_INVESTIGATION.md` (2025-11-28)

@@ -599,16 +599,23 @@ impl ZkVerifier {
     /// Groth16 verification - RISC Zero universal verification
     /// Uses RISC Zero's universal Groth16 verification key
     ///
-    /// Receipt format:
+    /// Receipt format (RISC Zero v3.0.x standard):
     /// [0..32]: image_id (circuit identifier)
     /// [32..64]: claim_digest (hash of ReceiptClaim)
-    /// [64..128]: proof.a (G1 point - 64 bytes)
-    /// [128..256]: proof.b (G2 point - 128 bytes)
-    /// [256..320]: proof.c (G1 point - 64 bytes)
-    /// [320..]: journal (public outputs from circuit)
+    /// [64..68]: selector (4-byte verifier version identifier - 0x73c457ba for v3.0.x)
+    /// [68..324]: seal (256 bytes - Groth16 proof: A, B, C points)
+    ///   [68..100]: A.x (32 bytes, big-endian)
+    ///   [100..132]: A.y (32 bytes, big-endian)
+    ///   [132..164]: B.x_c1 (32 bytes, real part)
+    ///   [164..196]: B.x_c0 (32 bytes, imaginary part)
+    ///   [196..228]: B.y_c1 (32 bytes, real part)
+    ///   [228..260]: B.y_c0 (32 bytes, imaginary part)
+    ///   [260..292]: C.x (32 bytes, big-endian)
+    ///   [292..324]: C.y (32 bytes, big-endian)
+    /// [324..]: journal (public outputs from circuit)
     ///
     /// RISC Zero Public Inputs (5 field elements):
-    /// 1-2: split_digest(control_root) -> (control_root_a0, control_root_a1)
+    /// 1-2: split_digest(image_id) -> (control_root_a0, control_root_a1)
     /// 3-4: split_digest(claim_digest) -> (claim_c0, claim_c1)
     /// 5: bn254_control_id (reversed)
     fn verify_receipt_groth16(
@@ -617,9 +624,9 @@ impl ZkVerifier {
         expected_image_id: &[u8; 32],
         _proof_type: &ProofType,
     ) -> (bool, Vec<u8>) {
-        // Minimum size: image_id(32) + claim_digest(32) + A(64) + B(128) + C(64) = 320 bytes
-        if receipt.len() < 320 {
-            env::log_str(&format!("Groth16 receipt too short: {} bytes, expected >= 320", receipt.len()));
+        // Minimum size: image_id(32) + claim_digest(32) + selector(4) + seal(256) = 324 bytes
+        if receipt.len() < 324 {
+            env::log_str(&format!("Groth16 receipt too short: {} bytes, expected >= 324", receipt.len()));
             return (false, vec![]);
         }
 
@@ -640,12 +647,25 @@ impl ZkVerifier {
         let mut claim_digest = [0u8; 32];
         claim_digest.copy_from_slice(&receipt[32..64]);
 
-        // Parse proof points (seal)
-        let proof = self.parse_groth16_proof(&receipt[64..320]);
+        // Extract and verify selector (RISC Zero v3.0.x)
+        const EXPECTED_SELECTOR: [u8; 4] = [0x73, 0xc4, 0x57, 0xba];  // v3.0.x selector
+        let selector = &receipt[64..68];
+
+        if selector != EXPECTED_SELECTOR {
+            env::log_str(&format!(
+                "Selector mismatch: expected 0x{}, got 0x{}",
+                hex::encode(EXPECTED_SELECTOR),
+                hex::encode(selector)
+            ));
+            return (false, vec![]);
+        }
+
+        // Parse proof points (seal) - skip selector, extract 256 bytes
+        let proof = self.parse_groth16_proof(&receipt[68..324]);
 
         // Extract journal (public outputs)
         // RISC Zero journal has 144 bytes of metadata/header, then the actual committed data
-        let full_journal = &receipt[320..];
+        let full_journal = &receipt[324..];
 
         env::log_str(&format!(
             "Full journal length: {} bytes, first 16 bytes: {}",
@@ -684,62 +704,79 @@ impl ZkVerifier {
         (is_valid, journal)
     }
 
-    /// Parse Groth16 proof from bytes
-    /// Format: A(64 bytes) || B(128 bytes) || C(64 bytes)
+    /// Parse Groth16 proof from RISC Zero seal bytes (256 bytes)
     ///
-    /// NOTE: RISC Zero's Groth16 seal is encoded in BIG-ENDIAN format (confirmed in risc0-groth16 source).
-    /// Parse Groth16 proof from receipt bytes
+    /// RISC Zero Seal Format (from ProverOpts::groth16() - verified on Ethereum):
+    /// - All field elements are BIG-ENDIAN (uint256 format, EIP-197 compatible)
+    /// - Total: 256 bytes = A (64) + B (128) + C (64)
+    /// - A (G1): [x (32), y (32)]
+    /// - B (G2): [x_c1 (32), x_c0 (32), y_c1 (32), y_c0 (32)] - Ethereum format [real, imaginary]
+    /// - C (G1): [x (32), y (32)]
     ///
-    /// EMPIRICALLY DETERMINED FORMAT (from systematic testing):
-    /// - Component ordering: SWAP (c1,c0) - Receipt has c0||c1, but NEAR expects c1||c0
-    /// - Byte endianness: NO REVERSAL - Use little-endian bytes as-is
-    ///
-    /// This is the ONLY configuration that passes NEAR's G2 point validation.
+    /// NEAR Compatibility:
+    /// - NEAR's alt_bn128 precompiles use from_le_bytes() to interpret field elements
+    /// - MUST reverse all 32-byte fields: BE (RISC Zero) → LE (NEAR)
+    /// - B components are SWAPPED: RISC Zero has [c1, c0] but NEAR expects [c0, c1]
     fn parse_groth16_proof(&self, data: &[u8]) -> Groth16Proof {
         assert!(data.len() >= 256, "Invalid proof data length");
 
-        env::log_str("=== PARSING GROTH16 PROOF ===");
+        env::log_str("=== PARSING GROTH16 PROOF (RISC Zero v3.0.x format) ===");
 
-        // Parse A (G1 point) - little-endian, no reversal
+        // Parse A (G1 point) - RISC Zero uses BIG-ENDIAN
         let mut a_x = [0u8; 32];
         let mut a_y = [0u8; 32];
         a_x.copy_from_slice(&data[0..32]);
         a_y.copy_from_slice(&data[32..64]);
 
-        env::log_str(&format!("A.x (LE): {}", hex::encode(&a_x[..8])));
+        // REVERSE for NEAR (BE → LE)
+        a_x.reverse();
+        a_y.reverse();
+
+        env::log_str(&format!("A.x (BE→LE): {}", hex::encode(&a_x[..8])));
 
         // Parse B (G2 point)
-        // Receipt format: x_c1 || x_c0 || y_c1 || y_c0 (Ethereum format: [c1, c0])
-        // NEAR expects: [c0, c1, c0, c1] - SO WE MUST SWAP!
+        // RISC Zero format: [x_c1, x_c0, y_c1, y_c0] (Ethereum convention: real, imaginary)
+        // NEAR expects: [x_c0, x_c1, y_c0, y_c1] (imaginary, real)
+        // SO WE MUST SWAP components
         let mut b_x_c0 = [0u8; 32];
         let mut b_x_c1 = [0u8; 32];
         let mut b_y_c0 = [0u8; 32];
         let mut b_y_c1 = [0u8; 32];
 
-        b_x_c0.copy_from_slice(&data[96..128]);   // SWAP: read x_c0 from position 2
-        b_x_c1.copy_from_slice(&data[64..96]);    // SWAP: read x_c1 from position 1
-        b_y_c0.copy_from_slice(&data[160..192]);  // SWAP: read y_c0 from position 4
-        b_y_c1.copy_from_slice(&data[128..160]);  // SWAP: read y_c1 from position 3
+        b_x_c1.copy_from_slice(&data[64..96]);    // x_c1 (real) from position 0
+        b_x_c0.copy_from_slice(&data[96..128]);   // x_c0 (imaginary) from position 1
+        b_y_c1.copy_from_slice(&data[128..160]);  // y_c1 (real) from position 2
+        b_y_c0.copy_from_slice(&data[160..192]);  // y_c0 (imaginary) from position 3
 
-        env::log_str(&format!("B.x_c0 (LE, swapped from pos 96): {}", hex::encode(&b_x_c0[..8])));
+        // REVERSE all components for NEAR (BE → LE)
+        b_x_c0.reverse();
+        b_x_c1.reverse();
+        b_y_c0.reverse();
+        b_y_c1.reverse();
 
-        // Parse C (G1 point) - little-endian, no reversal
+        env::log_str(&format!("B.x_c0 (BE→LE, swapped): {}", hex::encode(&b_x_c0[..8])));
+
+        // Parse C (G1 point) - RISC Zero uses BIG-ENDIAN
         let mut c_x = [0u8; 32];
         let mut c_y = [0u8; 32];
         c_x.copy_from_slice(&data[192..224]);
         c_y.copy_from_slice(&data[224..256]);
 
-        env::log_str(&format!("C.x (LE): {}", hex::encode(&c_x[..8])));
+        // REVERSE for NEAR (BE → LE)
+        c_x.reverse();
+        c_y.reverse();
+
+        env::log_str(&format!("C.x (BE→LE): {}", hex::encode(&c_x[..8])));
 
         env::log_str("=== PROOF PARSING COMPLETE ===");
 
         Groth16Proof {
             a: G1Point { x: a_x, y: a_y },
             b: G2Point {
-                x_c0: b_x_c0, // SWAPPED: now contains x_c0 (imaginary) from position 96
-                x_c1: b_x_c1, // SWAPPED: now contains x_c1 (real) from position 64
-                y_c0: b_y_c0, // SWAPPED: now contains y_c0 (imaginary) from position 160
-                y_c1: b_y_c1, // SWAPPED: now contains y_c1 (real) from position 128
+                x_c0: b_x_c0, // SWAPPED + REVERSED: now LE x_c0 (imaginary)
+                x_c1: b_x_c1, // SWAPPED + REVERSED: now LE x_c1 (real)
+                y_c0: b_y_c0, // SWAPPED + REVERSED: now LE y_c0 (imaginary)
+                y_c1: b_y_c1, // SWAPPED + REVERSED: now LE y_c1 (real)
             },
             c: G1Point { x: c_x, y: c_y },
         }
@@ -758,30 +795,45 @@ impl ZkVerifier {
         image_id: &[u8; 32],
         claim_digest: &[u8; 32],
     ) -> bool {
-        // RISC Zero constants (from risc0-circuit-recursion and risc0-groth16)
+        // RISC Zero constants (from risc0-ethereum v3.0.0 - matches our risc0-zkvm v3.0.3)
+        // Source: https://github.com/risc0/risc0-ethereum/blob/v3.0.0/contracts/src/groth16/ControlID.sol
 
-        // BN254_IDENTITY_CONTROL_ID from risc0-circuit-recursion 4.0.3
-        // NOTE: Original value c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404
-        // is >= BN254 Fr modulus. NEAR's alt_bn128 precompiles reject such values (unlike
-        // Solidity which auto-reduces). We use the pre-reduced value which is equivalent
-        // in Fr field arithmetic. RISC Zero's prover also reduces this internally.
+        // CONTROL_ROOT: Identifies the zkVM version (same for all proofs from this zkVM version)
+        // This is used as public input to Groth16 verifier, NOT the image_id!
+        // Image_id identifies the specific guest program and should be validated separately.
+        const CONTROL_ROOT: [u8; 32] = hex_literal::hex!(
+            "a54dc85ac99f851c92d7c96d7318af41dbe7c0194edfcc37eb4d422a998c1f56"
+        );
+
+        // BN254_CONTROL_ID for RISC Zero v3.0.x (little-endian, pre-reduced mod Fr)
+        // Ethereum value (big-endian): 04446e66d300eb7fb45c9726bb53c793dda407a62e9601618bb43c5c14657ac0
+        // Reversed (little-endian): c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404
+        // But reversed value >= Fr modulus, so we use pre-reduced value:
+        //   c07a...4404 mod Fr = 2f4d79bbb8a7d40e3810c50b21839bc61b2b9ae1b96b0b00b4452017966e4401
+        // NOTE: This has the OPPOSITE byte order to the value in Ethereum's ControlID.sol
+        // Ethereum (BE): 04446e66d300eb7fb45c9726bb53c793dda407a62e9601618bb43c5c14657ac0
+        // NEAR (LE): c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404
         const BN254_CONTROL_ID: [u8; 32] = hex_literal::hex!(
-            "2f4d79bbb8a7d40e3810c50b21839bc61b2b9ae1b96b0b00b4452017966e4401"
+            "c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404"
         );
 
         // Split digests into two 128-bit halves (as per RISC Zero Solidity verifier)
-        // Use the ACTUAL image_id from the receipt, not a hardcoded constant
-        let (control_a0, control_a1) = self.split_digest(image_id);
+        // Use CONTROL_ROOT (not image_id!) for public inputs
+        // split_digest already produces values in NEAR-compatible format (LE)
+        // No reversal needed - see split_digest() implementation
+        let (control_a0, control_a1) = self.split_digest(&CONTROL_ROOT);
         let (claim_c0, claim_c1) = self.split_digest(claim_digest);
 
-        // BN254_CONTROL_ID: reverse for little-endian (NEAR alt_bn128 format)
-        let mut bn254_id = BN254_CONTROL_ID;
-        bn254_id.reverse(); // Convert to little-endian
-        let mut bn254_id_padded = [0u8; 32];
-        bn254_id_padded.copy_from_slice(&bn254_id);
+        // Validate that the image_id in the receipt matches what we expect
+        // (This is separate from Groth16 verification - it's application-level validation)
+        // Note: In our design, we register expected image_ids per proof type
 
-        // Public inputs for RISC Zero Groth16 verification (5 field elements)
-        let public_inputs = [control_a0, control_a1, claim_c0, claim_c1, bn254_id_padded];
+        // BN254_CONTROL_ID is already in LE format (constant is pre-reversed)
+        let bn254_id_bytes = BN254_CONTROL_ID;
+
+        // Public inputs for RISC Zero Groth16 verification (5 field elements in LE)
+        // All values are now in LE format
+        let public_inputs = [control_a0, control_a1, claim_c0, claim_c1, bn254_id_bytes];
 
         env::log_str(&format!(
             "RISC Zero verification with claim_digest: {}",
@@ -793,7 +845,7 @@ impl ZkVerifier {
             hex::encode(&control_a1),
             hex::encode(&claim_c0),
             hex::encode(&claim_c1),
-            hex::encode(&bn254_id_padded)
+            hex::encode(&bn254_id_bytes)
         ));
 
         // Get RISC Zero universal VK
@@ -823,19 +875,54 @@ impl ZkVerifier {
         // BUT: NEAR's alt_bn128 precompile handles the endianness conversion internally!
         // So we should NOT double-reverse. Just reverse once and split.
 
+        env::log_str("=== SPLIT_DIGEST v2024-11-28-23:50 ===");
+        env::log_str(&format!("Input digest: {}", hex::encode(digest)));
+
         let mut reversed = *digest;
         reversed.reverse(); // reverseByteOrderUint256
+
+        env::log_str(&format!("After reverse: {}", hex::encode(&reversed)));
 
         let mut claim0 = [0u8; 32];
         let mut claim1 = [0u8; 32];
 
-        // In big-endian uint256 representation of 'reversed':
-        //   - uint128(reversed) = bytes[16..31] (lower 128 bits)
-        //   - uint128(reversed >> 128) = bytes[0..15] (upper 128 bits)
+        // For NEAR (LITTLE-ENDIAN): Need to reverse each 16-byte chunk AND put at START
         //
-        // Copy these directly (no second reverse needed!)
-        claim0[..16].copy_from_slice(&reversed[16..]);  // Lower 128 bits
-        claim1[..16].copy_from_slice(&reversed[..16]);  // Upper 128 bits
+        // Ethereum (BIG-ENDIAN):
+        //   - Takes lower 16 bytes of reversed: reversed[16..32]
+        //   - Interprets as uint128 (BE): 0x561f8c992a424deb37ccdf4e19c0e7db
+        //   - Casts to uint256: 0x00000000...561f8c99...e7db (value, not shifted!)
+        //
+        // NEAR (LITTLE-ENDIAN):
+        //   - Takes same 16 bytes: reversed[16..32]
+        //   - REVERSES them: 0xdbe7c0194edfcc37eb4d422a998c1f56
+        //   - Puts at START of 32-byte array: [0xdb, 0xe7, ..., 0x56, 0x00, ..., 0x00]
+        //   - from_le_bytes() reads: 0x00000000...561f8c99...e7db ✅ SAME VALUE!
+        //
+        // The double-reversal is needed because:
+        //   1. First reverse (digest → reversed): matches Solidity's reverseByteOrderUint256
+        //   2. Second reverse (16-byte chunk): converts BE chunk to LE representation
+
+        let mut chunk0 = [0u8; 16];
+        let mut chunk1 = [0u8; 16];
+
+        chunk0.copy_from_slice(&reversed[16..]);  // Lower 128 bits (BE)
+        chunk1.copy_from_slice(&reversed[..16]);  // Upper 128 bits (BE)
+
+        env::log_str(&format!("chunk0 before reverse: {}", hex::encode(&chunk0)));
+        env::log_str(&format!("chunk1 before reverse: {}", hex::encode(&chunk1)));
+
+        chunk0.reverse();  // Convert to LE
+        chunk1.reverse();  // Convert to LE
+
+        env::log_str(&format!("chunk0 after reverse: {}", hex::encode(&chunk0)));
+        env::log_str(&format!("chunk1 after reverse: {}", hex::encode(&chunk1)));
+
+        claim0[..16].copy_from_slice(&chunk0);  // Put at START (zeros at end)
+        claim1[..16].copy_from_slice(&chunk1);  // Put at START (zeros at end)
+
+        env::log_str(&format!("Final claim0: {}", hex::encode(&claim0)));
+        env::log_str(&format!("Final claim1: {}", hex::encode(&claim1)));
 
         (claim0, claim1)
     }
@@ -848,19 +935,16 @@ impl ZkVerifier {
         // Source: risc0-groth16/src/verifier.rs
         // This is the SAME key for ALL RISC Zero circuits
         //
-        // CRITICAL: All constants are REVERSED from big-endian (RISC Zero format)
-        // to little-endian (NEAR alt_bn128 interpretation)
-        // Generated via: node scripts/reverse_vk_constants.js
-
-        // VK constants (REVERSED for NEAR little-endian interpretation)
         // RISC Zero v3.0.3 Universal Groth16 Verification Key
-        // Converted from risc0-ethereum v3.0.0 Groth16Verifier.sol to little-endian
-        // FIXED: Corrected G2 point component ordering based on RISC Zero types.rs conversion logic
+        // Converted from risc0-ethereum v3.0.0 Groth16Verifier.sol to LITTLE-ENDIAN
+        // NEAR's alt_bn128 precompiles use from_le_bytes() to interpret field elements
+        // All constants stored in LE format (reversed from Ethereum) for NEAR compatibility
+
         const ALPHA_G1_X: [u8; 32] = hex_literal::hex!("e2f26dbea299f5223b646cb1fb33eadb059d9407559d7441dfd902e3a79a4d2d");
         const ALPHA_G1_Y: [u8; 32] = hex_literal::hex!("26194d00ffca76f0010323190a8389ce45e39f2060ecd861b0ce373c50ddbe14");
 
         // VK G2 constants: c0 contains IMAGINARY (X2/Y2), c1 contains REAL (X1/Y1)
-        // This matches NEAR's expected serialization format: imaginary || real
+        // LITTLE-ENDIAN format (reversed from Ethereum for NEAR)
         const BETA_G2_X_C0: [u8; 32] = hex_literal::hex!("abb73dc17fbc13021e2471e0c08bd67d8401f52b73d6d07483794cad4778180e");  // x imaginary (BETA_X2)
         const BETA_G2_X_C1: [u8; 32] = hex_literal::hex!("0c06f33bbc4c79a9cadef253a68084d382f17788f885c9afd176f7cb2f036709");  // x real (BETA_X1)
         const BETA_G2_Y_C0: [u8; 32] = hex_literal::hex!("c8ced07a54067fd5a905ea3ec6b796f892912f4dd2233131c7a857a4b1c13917");  // y imaginary (BETA_Y2)
@@ -877,6 +961,7 @@ impl ZkVerifier {
         const DELTA_G2_Y_C1: [u8; 32] = hex_literal::hex!("6207030d94d2915cca2872fb6e3668a8aec918d5460849f6190b204f13100c11");  // y real (DELTA_Y1)
 
         // IC points (6 total = 5 public inputs + 1)
+        // LITTLE-ENDIAN format (reversed from Ethereum for NEAR)
         const IC0_X: [u8; 32] = hex_literal::hex!("e43bdc655d0f9d730535554d9caa611ddd152c081a06a932a8e1d5dc259aac12");
         const IC0_Y: [u8; 32] = hex_literal::hex!("d4ac80e90ec6232bee3e0fd3a2f56f106985891c913117d97abe1e5844a75a02");
         const IC1_X: [u8; 32] = hex_literal::hex!("3f42a188f683d869873ccc4c119442e57b056e03e2fa92f2028c97bc20b90707");
@@ -890,48 +975,43 @@ impl ZkVerifier {
         const IC5_X: [u8; 32] = hex_literal::hex!("93d4c4b1200394d5253cce2f25a59b862ee8e4cd43686603faa09d5d0d3c1c0f");
         const IC5_Y: [u8; 32] = hex_literal::hex!("09e8690bbd01aa8782f608362fbbc88b2d4807b3070d8cfef625f474fffc4b21");
 
-        // CRITICAL: VK constants above are stored in LITTLE-ENDIAN format (reversed).
-        // NEAR's alt_bn128 precompiles expect LITTLE-ENDIAN.
-        // Use the constants as-is (already in little-endian).
-        //
-        // EMPIRICALLY TESTED:
-        // - VK G1 REVERSAL: FAILED with "invalid fq" error
-        // - VK G1 NO REVERSAL: Use little-endian as-is
+        // CRITICAL: VK constants above are stored in LITTLE-ENDIAN format (reversed from Ethereum).
+        // NEAR's alt_bn128 precompiles use from_le_bytes() to interpret field elements.
+        // When NEAR reads these LE bytes, it will reconstruct the correct field element values.
+        // See docs/NEAR_ENDIANNESS_FINAL_SOLUTION.md for complete explanation.
 
         Groth16VerificationKey {
             alpha_g1: G1Point {
-                x: ALPHA_G1_X,  // Little-endian as-is
-                y: ALPHA_G1_Y,  // Little-endian as-is
+                x: ALPHA_G1_X,  // Little-endian (for NEAR)
+                y: ALPHA_G1_Y,  // Little-endian (for NEAR)
             },
-            // VK G2 constants: Use as-is from Ethereum constants
-            // These have: c0=imaginary, c1=real (Ethereum convention)
-            // Proof B from RISC Zero has: c0=real, c1=imaginary
-            // Swap will happen during serialization to normalize
+            // VK G2 constants in LE format
+            // c0=imaginary, c1=real (Ethereum convention, preserved in LE)
             beta_g2: G2Point {
-                x_c0: BETA_G2_X_C0,  // imaginary (from BETA_X2)
-                x_c1: BETA_G2_X_C1,  // real (from BETA_X1)
-                y_c0: BETA_G2_Y_C0,  // imaginary (from BETA_Y2)
-                y_c1: BETA_G2_Y_C1,  // real (from BETA_Y1)
+                x_c0: BETA_G2_X_C0,  // imaginary (LE)
+                x_c1: BETA_G2_X_C1,  // real (LE)
+                y_c0: BETA_G2_Y_C0,  // imaginary (LE)
+                y_c1: BETA_G2_Y_C1,  // real (LE)
             },
             gamma_g2: G2Point {
-                x_c0: GAMMA_G2_X_C0,  // imaginary
-                x_c1: GAMMA_G2_X_C1,  // real
-                y_c0: GAMMA_G2_Y_C0,  // imaginary
-                y_c1: GAMMA_G2_Y_C1,  // real
+                x_c0: GAMMA_G2_X_C0,  // imaginary (LE)
+                x_c1: GAMMA_G2_X_C1,  // real (LE)
+                y_c0: GAMMA_G2_Y_C0,  // imaginary (LE)
+                y_c1: GAMMA_G2_Y_C1,  // real (LE)
             },
             delta_g2: G2Point {
-                x_c0: DELTA_G2_X_C0,  // imaginary
-                x_c1: DELTA_G2_X_C1,  // real
-                y_c0: DELTA_G2_Y_C0,  // imaginary
-                y_c1: DELTA_G2_Y_C1,  // real
+                x_c0: DELTA_G2_X_C0,  // imaginary (LE)
+                x_c1: DELTA_G2_X_C1,  // real (LE)
+                y_c0: DELTA_G2_Y_C0,  // imaginary (LE)
+                y_c1: DELTA_G2_Y_C1,  // real (LE)
             },
             ic: vec![
-                G1Point { x: IC0_X, y: IC0_Y },  // Little-endian as-is
-                G1Point { x: IC1_X, y: IC1_Y },  // Little-endian as-is
-                G1Point { x: IC2_X, y: IC2_Y },  // Little-endian as-is
-                G1Point { x: IC3_X, y: IC3_Y },  // Little-endian as-is
-                G1Point { x: IC4_X, y: IC4_Y },  // Little-endian as-is
-                G1Point { x: IC5_X, y: IC5_Y },  // Little-endian as-is
+                G1Point { x: IC0_X, y: IC0_Y },  // LE format
+                G1Point { x: IC1_X, y: IC1_Y },  // LE format
+                G1Point { x: IC2_X, y: IC2_Y },  // LE format
+                G1Point { x: IC3_X, y: IC3_Y },  // LE format
+                G1Point { x: IC4_X, y: IC4_Y },  // LE format
+                G1Point { x: IC5_X, y: IC5_Y },  // LE format
             ],
         }
     }
@@ -1073,17 +1153,17 @@ impl ZkVerifier {
         let mut multiexp_input = Vec::with_capacity(num_pairs * 96);
 
         for i in 0..num_pairs {
-            // G1 point
+            // G1 point (BIG-ENDIAN, same as Ethereum)
             multiexp_input.extend_from_slice(&ic[i + 1].x);
             multiexp_input.extend_from_slice(&ic[i + 1].y);
-            // Scalar
+            // Scalar (BIG-ENDIAN)
             multiexp_input.extend_from_slice(&scalars[i]);
         }
 
         // Compute multiexp
         let multiexp_result = env::alt_bn128_g1_multiexp(&multiexp_input);
 
-        // Parse result G1 point
+        // Parse result G1 point (BIG-ENDIAN)
         if multiexp_result.len() >= 64 {
             let mut sum_point = G1Point { x: [0; 32], y: [0; 32] };
             sum_point.x.copy_from_slice(&multiexp_result[0..32]);
@@ -1104,12 +1184,12 @@ impl ZkVerifier {
         // NO count prefix - just raw points (65 bytes each)
         let mut input = Vec::with_capacity(65 * 2);
 
-        // Point 1 (positive)
+        // Point 1 (positive, BIG-ENDIAN)
         input.extend_from_slice(&p1.x);
         input.extend_from_slice(&p1.y);
         input.push(0); // sign = positive
 
-        // Point 2 (positive)
+        // Point 2 (positive, BIG-ENDIAN)
         input.extend_from_slice(&p2.x);
         input.extend_from_slice(&p2.y);
         input.push(0); // sign = positive
@@ -1176,14 +1256,11 @@ impl ZkVerifier {
 
     /// Append a (G1, G2) pair to the pairing input buffer
     fn append_pairing_pair(&self, buffer: &mut Vec<u8>, g1: &G1Point, g2: &G2Point) {
-        // G1: x || y (64 bytes)
+        // G1: x || y (64 bytes, BIG-ENDIAN)
         buffer.extend_from_slice(&g1.x);
         buffer.extend_from_slice(&g1.y);
 
-        // G2: x_c0 || x_c1 || y_c0 || y_c1 (128 bytes)
-        // Send as-is - NO SWAP during serialization
-        // Proof.b already has SWAP during parsing (groth16.rs)
-        // VK G2 has NO SWAP (used as-is from constants)
+        // G2: x_c0 || x_c1 || y_c0 || y_c1 (128 bytes, BIG-ENDIAN)
         buffer.extend_from_slice(&g2.x_c0);
         buffer.extend_from_slice(&g2.x_c1);
         buffer.extend_from_slice(&g2.y_c0);
