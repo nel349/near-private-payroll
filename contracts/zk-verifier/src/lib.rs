@@ -663,27 +663,14 @@ impl ZkVerifier {
         // Parse proof points (seal) - skip selector, extract 256 bytes
         let proof = self.parse_groth16_proof(&receipt[68..324]);
 
-        // Extract journal (public outputs)
-        // RISC Zero journal has 144 bytes of metadata/header, then the actual committed data
-        let full_journal = &receipt[324..];
+        // Extract journal (public outputs) - starts immediately at byte 324
+        let journal = receipt[324..].to_vec();
 
         env::log_str(&format!(
-            "Full journal length: {} bytes, first 16 bytes: {}",
-            full_journal.len(),
-            hex::encode(&full_journal[..full_journal.len().min(16)])
+            "Journal length: {} bytes, first 16 bytes: {}",
+            journal.len(),
+            hex::encode(&journal[..journal.len().min(16)])
         ));
-
-        let journal = if full_journal.len() > 144 {
-            let extracted = full_journal[144..].to_vec();
-            env::log_str(&format!(
-                "Extracted journal (skipped 144 bytes): {} bytes, first 16: {}",
-                extracted.len(),
-                hex::encode(&extracted[..extracted.len().min(16)])
-            ));
-            extracted
-        } else {
-            full_journal.to_vec()
-        };
 
         env::log_str(&format!(
             "RISC Zero Groth16 verification - claim_digest: {}, journal: {} bytes",
@@ -1297,7 +1284,7 @@ impl ZkVerifier {
     // These parse the public outputs committed by the RISC Zero guest program
 
     fn parse_payment_output(&self, journal: &[u8]) -> PaymentProofOutput {
-        // Expected format: [salary_commitment: 32, payment_commitment: 32, amounts_match: 1]
+        // Expected format: [salary_commitment: 32, payment_commitment: 32, amounts_match: 1 (u8)]
         if journal.len() < 65 {
             return PaymentProofOutput {
                 salary_commitment: [0u8; 32],
@@ -1323,9 +1310,9 @@ impl ZkVerifier {
     /// Format: [threshold: 8, meets_threshold: 1, payment_count: 4, history_commitment: 32]
     /// Total: 45 bytes
     fn parse_income_threshold_output(&self, journal: &[u8], expected_commitment: &[u8; 32]) -> IncomeThresholdOutput {
-        // RISC Zero journal format: threshold(8) + meets_threshold(4 as u32!) + payment_count(4) + commitment(32) = 48 bytes
-        if journal.len() < 48 {
-            env::log_str(&format!("Invalid journal length: {} (expected 48)", journal.len()));
+        // Bincode format: threshold(8) + meets_threshold(1) + payment_count(4 BE!) + commitment(32) = 45 bytes
+        if journal.len() < 45 {
+            env::log_str(&format!("Invalid journal length: {} (expected 45)", journal.len()));
             return IncomeThresholdOutput {
                 threshold: 0,
                 meets_threshold: false,
@@ -1336,11 +1323,11 @@ impl ZkVerifier {
         }
 
         let threshold = u64::from_le_bytes(journal[0..8].try_into().unwrap());
-        let meets_threshold = u32::from_le_bytes(journal[8..12].try_into().unwrap()) != 0;  // bool serialized as u32!
-        let payment_count = u32::from_le_bytes(journal[12..16].try_into().unwrap());
+        let meets_threshold = journal[8] != 0;  // bool as 1 byte
+        let payment_count = u32::from_be_bytes(journal[9..13].try_into().unwrap());  // BIG-ENDIAN u32 (bincode quirk after bool!)
 
         let mut history_commitment = [0u8; 32];
-        history_commitment.copy_from_slice(&journal[16..48]);
+        history_commitment.copy_from_slice(&journal[13..45]);
 
         IncomeThresholdOutput {
             threshold,
@@ -1352,9 +1339,10 @@ impl ZkVerifier {
     }
 
     /// Parse income range journal
-    /// Format: [min: 8, max: 8, in_range: 1, payment_count: 4, history_commitment: 32]
+    /// Format: [min: 8, max: 8, in_range: 1 (bool/u8), payment_count: 4 BE!, history_commitment: 32]
     /// Total: 53 bytes
     fn parse_income_range_output(&self, journal: &[u8], expected_commitment: &[u8; 32]) -> IncomeRangeOutput {
+        env::log_str(&format!("parse_income_range_output: journal length = {}", journal.len()));
         if journal.len() < 53 {
             env::log_str(&format!("Invalid journal length: {} (expected 53)", journal.len()));
             return IncomeRangeOutput {
@@ -1370,7 +1358,9 @@ impl ZkVerifier {
         let min = u64::from_le_bytes(journal[0..8].try_into().unwrap());
         let max = u64::from_le_bytes(journal[8..16].try_into().unwrap());
         let in_range = journal[16] != 0;
-        let payment_count = u32::from_le_bytes(journal[17..21].try_into().unwrap());
+        let payment_count = u32::from_be_bytes(journal[17..21].try_into().unwrap());  // BIG-ENDIAN u32 (bincode quirk after bool!)
+
+        env::log_str(&format!("Parsed: min={}, max={}, in_range={}, payment_count={}", min, max, in_range, payment_count));
 
         let mut history_commitment = [0u8; 32];
         history_commitment.copy_from_slice(&journal[21..53]);
@@ -1400,9 +1390,9 @@ impl ZkVerifier {
             };
         }
 
-        let threshold = u32::from_le_bytes(journal[0..4].try_into().unwrap());
+        let threshold = u32::from_le_bytes(journal[0..4].try_into().unwrap());  // LITTLE-ENDIAN u32
         let meets_threshold = journal[4] != 0;
-        let payment_count = u32::from_le_bytes(journal[5..9].try_into().unwrap());
+        let payment_count = u32::from_be_bytes(journal[5..9].try_into().unwrap());  // BIG-ENDIAN u32 (bincode quirk after bool!)
 
         let mut history_commitment = [0u8; 32];
         history_commitment.copy_from_slice(&journal[9..41]);

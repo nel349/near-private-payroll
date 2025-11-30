@@ -355,6 +355,199 @@ fn generate_credit_score_test_proof() {
     println!("\n✓ Test proof saved to scripts/test_proofs/credit_score.json");
 }
 
+#[test]
+#[ignore]
+fn generate_average_income_test_proof() {
+    println!("\n=== Generating Average Income Test Proof ===");
+    println!("This will take ~2 minutes...\n");
+
+    let elf_path = get_elf_path("income-proof");
+    let elf = fs::read(&elf_path).expect("Failed to read income-proof ELF");
+
+    let payment_history = vec![4500u64, 5000, 5500, 4800, 5200];
+    let threshold = 5000u64;
+
+    let payment_commitments: Vec<[u8; 32]> = payment_history
+        .iter()
+        .enumerate()
+        .map(|(i, &amount)| {
+            let mut commitment = [0u8; 32];
+            for j in 0..32 {
+                commitment[j] = ((amount as usize + i + j) % 256) as u8;
+            }
+            commitment
+        })
+        .collect();
+    let history_commitment = compute_history_commitment(&payment_commitments);
+
+    let inputs = IncomeProofInputs::Average {
+        payment_history: payment_history.clone(),
+        threshold,
+        history_commitment,
+    };
+
+    println!("Input parameters:");
+    println!("  Payment history: {:?}", payment_history);
+    println!("  Average threshold: {}", threshold);
+    let avg: u64 = payment_history.iter().sum::<u64>() / payment_history.len() as u64;
+    println!("  Calculated average: {}", avg);
+
+    let env = ExecutorEnv::builder()
+        .write(&inputs)
+        .expect("Failed to write inputs")
+        .build()
+        .expect("Failed to build environment");
+
+    println!("\nGenerating proof...");
+    let prover = default_prover();
+    let prove_info = prover
+        .prove(env, &elf)
+        .expect("Failed to generate proof");
+
+    println!("✓ Proof generated");
+
+    let receipt = prove_info.receipt;
+    let journal_bytes = receipt.journal.bytes.clone();
+
+    // Parse journal: history_commitment(32) + meets_threshold(1) + payment_count(4) + threshold(8)
+    let meets_threshold = journal_bytes[32] != 0;
+    let payment_count = u32::from_le_bytes([
+        journal_bytes[33], journal_bytes[34], journal_bytes[35], journal_bytes[36],
+    ]);
+    let threshold_out = u64::from_le_bytes([
+        journal_bytes[37], journal_bytes[38], journal_bytes[39], journal_bytes[40],
+        journal_bytes[41], journal_bytes[42], journal_bytes[43], journal_bytes[44],
+    ]);
+
+    println!("\nPublic outputs:");
+    println!("  Meets threshold: {}", meets_threshold);
+    println!("  Payment count: {}", payment_count);
+    println!("  Threshold: {}", threshold_out);
+
+    println!("\nConverting to Groth16...");
+    let (groth16_receipt, image_id) = proof_server::groth16::convert_to_groth16(receipt)
+        .expect("Failed to convert to Groth16");
+
+    println!("✓ Converted to Groth16");
+
+    let test_proof = TestProofData {
+        receipt: groth16_receipt,
+        image_id: image_id.to_vec(),
+        public_inputs: serde_json::json!({
+            "history_commitment": history_commitment.to_vec(),
+            "meets_threshold": meets_threshold,
+            "payment_count": payment_count,
+            "threshold": threshold_out,
+        }),
+        params: serde_json::json!({
+            "payment_history": payment_history,
+            "threshold": threshold,
+            "history_commitment": history_commitment.to_vec(),
+        }),
+    };
+
+    save_test_proof("average_income", &test_proof);
+    println!("\n✓ Test proof saved to scripts/test_proofs/average_income.json");
+}
+
+#[test]
+#[ignore]
+fn generate_payment_test_proof() {
+    println!("\n=== Generating Payment Proof Test Proof ===");
+    println!("This will take ~2 minutes...\n");
+
+    let elf_path = get_elf_path("payment-proof");
+    let elf = fs::read(&elf_path).expect("Failed to read payment-proof ELF");
+
+    // Test data: salary and payment that match
+    let salary = 5000u64;
+    let payment_amount = 5000u64;
+    let salary_blinding = [0x11u8; 32];
+    let payment_blinding = [0x22u8; 32];
+
+    // Build inputs matching PaymentProofInput structure
+    // The circuit expects a serialized struct, so we need to define it here
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize)]
+    struct PaymentProofInput {
+        salary: u64,
+        salary_blinding: [u8; 32],
+        payment_amount: u64,
+        payment_blinding: [u8; 32],
+    }
+
+    let input = PaymentProofInput {
+        salary,
+        salary_blinding,
+        payment_amount,
+        payment_blinding,
+    };
+
+    let env = ExecutorEnv::builder()
+        .write(&input)
+        .expect("Failed to write input")
+        .build()
+        .expect("Failed to build environment");
+
+    println!("Input parameters:");
+    println!("  Salary: {}", salary);
+    println!("  Payment: {}", payment_amount);
+    println!("  Should match: {}", salary == payment_amount);
+
+    println!("\nGenerating proof...");
+    let prover = default_prover();
+    let prove_info = prover
+        .prove(env, &elf)
+        .expect("Failed to generate proof");
+
+    println!("✓ Proof generated");
+
+    let receipt = prove_info.receipt;
+    let journal_bytes = receipt.journal.bytes.clone();
+
+    // Parse journal: salary_commitment(32) + payment_commitment(32) + amounts_match(1)
+    let mut salary_commitment = [0u8; 32];
+    salary_commitment.copy_from_slice(&journal_bytes[0..32]);
+
+    let mut payment_commitment = [0u8; 32];
+    payment_commitment.copy_from_slice(&journal_bytes[32..64]);
+
+    let amounts_match = journal_bytes[64] != 0;
+
+    println!("\nPublic outputs:");
+    println!("  Salary commitment: {}", hex::encode(&salary_commitment));
+    println!("  Payment commitment: {}", hex::encode(&payment_commitment));
+    println!("  Amounts match: {}", amounts_match);
+
+    println!("\nConverting to Groth16...");
+    let (groth16_receipt, image_id) = proof_server::groth16::convert_to_groth16(receipt)
+        .expect("Failed to convert to Groth16");
+
+    println!("✓ Converted to Groth16");
+    println!("  Receipt size: {} bytes", groth16_receipt.len());
+    println!("  Image ID: {}", hex::encode(&image_id));
+
+    let test_proof = TestProofData {
+        receipt: groth16_receipt,
+        image_id: image_id.to_vec(),
+        public_inputs: serde_json::json!({
+            "salary_commitment": salary_commitment.to_vec(),
+            "payment_commitment": payment_commitment.to_vec(),
+            "amounts_match": amounts_match,
+        }),
+        params: serde_json::json!({
+            "salary": salary,
+            "payment_amount": payment_amount,
+            "salary_blinding": salary_blinding.to_vec(),
+            "payment_blinding": payment_blinding.to_vec(),
+        }),
+    };
+
+    save_test_proof("payment", &test_proof);
+    println!("\n✓ Test proof saved to scripts/test_proofs/payment.json");
+}
+
 // Helper functions
 
 fn get_elf_path(circuit_name: &str) -> PathBuf {
