@@ -1,334 +1,272 @@
-# Zcash ↔ NEAR Bridge Relayer
+# Zcash ↔ NEAR Bridge Relayer (TypeScript)
 
-This relayer service bridges Zcash testnet and NEAR testnet for the Private Payroll system.
+Elegant TypeScript bridge relayer for Zcash testnet (via Zallet) to NEAR testnet.
 
-## What It Does
+## Architecture
 
-1. **Monitors Zcash**: Watches a custody address for incoming ZEC deposits
-2. **Mints wZEC**: When ZEC is received, mints equivalent wZEC on NEAR
-3. **Processes Withdrawals**: Sends ZEC from custody when employees withdraw (TODO)
+```
+┌─────────────────────────────────────┐
+│  src/                               │
+│  ├── index.ts          (Entry point)│
+│  ├── config.ts         (Config loader)│
+│  ├── types.ts          (Type definitions)│
+│  ├── relayer.ts        (Main orchestrator)│
+│  └── services/                      │
+│      ├── zcash.service.ts (Zallet RPC)│
+│      ├── near.service.ts  (wZEC SDK) │
+│      └── state.service.ts (Persistence)│
+└─────────────────────────────────────┘
+```
+
+## Features
+
+- ✅ **Type-safe** - Full TypeScript with strict mode
+- ✅ **Clean architecture** - Separation of concerns with service classes
+- ✅ **Zallet compatible** - Uses modern Zallet RPC (account UUID model)
+- ✅ **SDK integration** - Reuses existing NEAR SDK types
+- ✅ **State management** - Persistent state across restarts
+- ✅ **Error handling** - Comprehensive error recovery
+- ✅ **Graceful shutdown** - SIGINT/SIGTERM handlers
 
 ## Quick Start
 
-### 1. Prerequisites
-
-**Zcash testnet node:**
-```bash
-# Option A: Docker (easiest)
-docker run -d \
-  --name zcash-testnet \
-  -v ~/.zcash:/root/.zcash \
-  -p 18232:18232 \
-  electriccoinco/zcashd:latest \
-  zcashd -testnet -printtoconsole
-
-# Option B: Native
-zcashd -testnet -daemon
-```
-
-**NEAR account:**
-```bash
-near login
-# Creates credentials in ~/.near-credentials/
-```
-
-### 2. Install Dependencies
+### 1. Install Dependencies
 
 ```bash
 cd bridge-relayer
 npm install
 ```
 
-### 3. Configure
+### 2. Build TypeScript
 
 ```bash
-# Copy example config
-cp .env.example .env
+npm run build
+```
 
-# Edit .env with your values
+### 3. Configure Environment
+
+```bash
+cp .env.example .env
 nano .env
 ```
 
-**Required values:**
-- `ZCASH_CUSTODY_ADDRESS`: Shielded address for bridge deposits (create with `zcash-cli -testnet z_getnewaddress sapling`)
-- `ZCASH_RPC_PASSWORD`: From `~/.zcash/zcash.conf`
-- `NEAR_RELAYER_ACCOUNT`: Your testnet account (e.g., `relayer.your-account.testnet`)
-- `WZEC_CONTRACT`: Deployed wZEC contract address
-- `INTENTS_ADAPTER`: Deployed intents adapter address
+**Required:**
+- `ZCASH_RPC_PASSWORD` - From `~/.zallet/zallet.toml`
+- `NEAR_RELAYER_ACCOUNT` - Your testnet account
+- `WZEC_CONTRACT` - Deployed wZEC contract address
+- `INTENTS_ADAPTER` - Deployed intents adapter address
 
-### 4. Create Custody Address
+**Optional:**
+- `ZCASH_CUSTODY_ACCOUNT_UUID` - Specific account UUID (uses first account if not set)
 
-```bash
-# Generate new shielded address
-zcash-cli -testnet z_getnewaddress sapling
-
-# Output: zs1abc123...
-# Add this to .env as ZCASH_CUSTODY_ADDRESS
-```
-
-### 5. Fund Custody Address (Testing)
-
-Get testnet ZEC and send to custody:
+### 4. Run Relayer
 
 ```bash
-# Get from faucet: https://faucet.testnet.z.cash/
-# Then send to your custody address
-
-zcash-cli -testnet z_sendmany \
-  "zs1your_funded_address" \
-  '[{
-    "address": "zs1your_custody_address",
-    "amount": 0.1
-  }]'
-```
-
-### 6. Run Relayer
-
-```bash
+# Production (compiled)
 npm start
+
+# Development (ts-node)
+npm run dev
 ```
 
-Expected output:
+## Project Structure
+
+### Services
+
+**ZcashService** (`services/zcash.service.ts`)
+- Zallet RPC integration
+- Deposit monitoring
+- Transaction sending
+- Type-safe RPC methods
+
+**NearService** (`services/near.service.ts`)
+- NEAR API integration
+- wZEC minting using SDK
+- Balance queries
+
+**StateService** (`services/state.service.ts`)
+- Persistent state management
+- Tx
+
+id tracking
+- Block height tracking
+
+### Main Orchestrator
+
+**BridgeRelayer** (`relayer.ts`)
+- Coordinates all services
+- Monitors deposits
+- Processes minting
+- Handles errors and retries
+
+## Type Definitions
+
+All types are in `src/types.ts`:
+
+```typescript
+// Zallet RPC types
+ZalletAccount
+ZalletBalance
+ZalletUnspentOutput
+ZalletOperationStatus
+BlockchainInfo
+
+// Bridge types
+RelayerConfig
+RelayerState
+DepositEvent
+PendingWithdrawal
 ```
-🌉 Zcash → NEAR Bridge Relayer
-================================
 
-Testing Zcash RPC connection...
-  ✅ Connected to Zcash testnet
-  Block height: 2500000
-  Chain: test
+## Development
 
-Custody address: zs1abc123...
-Custody balance: 0.1 ZEC
+### Build
 
-Connecting to NEAR testnet ...
-  ✅ Connected as: relayer.your-account.testnet
-  Balance: 10.5 NEAR
-
-Configuration:
-  wZEC Contract: wzec-123456.your-account.testnet
-  Intents Adapter: intents-123456.your-account.testnet
-  Poll Interval: 30 seconds
-
-🚀 Relayer started! Monitoring for deposits...
+```bash
+npm run build
 ```
 
-## Testing the Bridge
+### Clean
+
+```bash
+npm run clean
+```
+
+### Type Check
+
+```bash
+npx tsc --noEmit
+```
+
+## Testing
+
+### Prerequisites
+
+1. **Zebra synced** (~90%+)
+2. **Zallet RPC available** (port 28232)
+3. **Custody account** with testnet ZEC
+4. **NEAR contracts deployed** to testnet
 
 ### Test Deposit Flow
 
-**Terminal 1: Run relayer**
+**Terminal 1: Start relayer**
 ```bash
-npm start
+npm run dev
 ```
 
 **Terminal 2: Send test deposit**
 ```bash
-# Send ZEC to custody with company memo
-zcash-cli -testnet z_sendmany \
-  "zs1your_source_address" \
-  '[{
-    "address": "zs1your_custody_address",
-    "amount": 0.01,
-    "memo": "'$(echo -n "company:company.your-account.testnet" | xxd -p)'"
-  }]'
+# Get your custody address
+UUID=$(curl -s --user "zcashrpc:testpass123" \
+  --data-binary '{"jsonrpc":"1.0","id":"1","method":"z_listaccounts","params":[]}' \
+  http://127.0.0.1:28232/ | jq -r '.result[0].account_uuid')
 
-# Get operation ID
-# opid-abc123...
+CUSTODY_ADDR=$(curl -s --user "zcashrpc:testpass123" \
+  --data-binary "{\"jsonrpc\":\"1.0\",\"id\":\"1\",\"method\":\"z_getaddressforaccount\",\"params\":[\"$UUID\",[\"sapling\"]]}" \
+  http://127.0.0.1:28232/ | jq -r '.result.address')
 
-# Wait for completion
-zcash-cli -testnet z_getoperationstatus '["opid-abc123..."]'
+# Send test deposit with company memo
+echo -n "company:company.your-account.testnet" | xxd -p | tr -d '\n'
+# Use output as memo in z_sendmany
 ```
 
 **Terminal 3: Verify wZEC minted**
 ```bash
-# Wait 1-2 minutes for Zcash confirmation
-# Then check NEAR balance
-
-near view wzec-123456.your-account.testnet ft_balance_of \
+near view wzec.your-account.testnet ft_balance_of \
   '{"account_id": "company.your-account.testnet"}' \
   --networkId testnet
-
-# Expected: "1000000" (0.01 ZEC = 1,000,000 smallest units)
 ```
 
-### Memo Format
+## Configuration
 
-Include company account in transaction memo:
+### Zallet Setup
+
+Ensure `~/.zallet/zallet.toml` has RPC enabled:
+
+```toml
+[rpc]
+bind = ["127.0.0.1:28232"]
+
+[[rpc.auth]]
+user = "zcashrpc"
+password = "testpass123"
+```
+
+### NEAR Credentials
 
 ```bash
-# Format: "company:account.testnet"
-# Encode to hex:
-echo -n "company:company.your-account.testnet" | xxd -p
-# Output: 636f6d70616e793a636f6d70616e792e796f75722d6163636f756e742e746573746e6574
-
-# Use in z_sendmany:
-"memo": "636f6d70616e793a636f6d70616e792e796f75722d6163636f756e742e746573746e6574"
+near login
+# Creates credentials in ~/.near-credentials/testnet/
 ```
 
-If no memo is provided, wZEC is minted to `default.testnet`.
+## Error Handling
+
+The relayer handles:
+
+- ✅ Zallet RPC connection failures
+- ✅ NEAR connection failures
+- ✅ Transaction confirmation timeouts
+- ✅ Minting failures (with retry)
+- ✅ State persistence failures
+
+Failed deposits are logged but not marked as processed, so they'll be retried on next poll.
+
+## State Management
+
+State is persisted in `relayer-state.json`:
+
+```json
+{
+  "lastProcessedBlock": 1234567,
+  "processedTxids": ["abc123...", "def456..."],
+  "pendingWithdrawals": []
+}
+```
+
+On restart, the relayer resumes from `lastProcessedBlock`.
 
 ## Monitoring
 
-### View Relayer State
+### Logs
 
-```bash
-cat relayer-state.json
-```
-
-Shows:
-- Last processed Zcash block
-- Processed transaction IDs
-- Pending withdrawals
-
-### Check Zcash Transactions
-
-```bash
-# List received to custody
-zcash-cli -testnet z_listreceivedbyaddress "zs1your_custody_address" 1
-
-# View specific transaction
-zcash-cli -testnet gettransaction <txid>
-```
-
-### Check NEAR Transactions
-
-```bash
-# View wZEC balance
-near view wzec-123456.your-account.testnet ft_balance_of \
-  '{"account_id": "company.your-account.testnet"}' \
-  --networkId testnet
-
-# View total supply
-near view wzec-123456.your-account.testnet ft_total_supply \
-  --networkId testnet
-```
-
-## Architecture
+The relayer outputs structured logs:
 
 ```
-┌─────────────┐
-│   Company   │
-│  (Zcash)    │
-└──────┬──────┘
-       │ 1. Send ZEC with memo
-       │    "company:account.testnet"
-       ▼
-┌─────────────────────────┐
-│  Custody Address (zs1)  │
-│  (Shielded Balance)     │
-└──────┬──────────────────┘
-       │
-       │ 2. Relayer detects
-       ▼
-┌─────────────────────────┐
-│   Bridge Relayer        │
-│   - Monitor deposits    │
-│   - Parse memos         │
-│   - Call NEAR mint      │
-└──────┬──────────────────┘
-       │ 3. Mint wZEC
-       ▼
-┌─────────────────────────┐
-│  wZEC Contract (NEAR)   │
-│  - Mint tokens          │
-│  - Track supply         │
-└──────┬──────────────────┘
-       │ 4. Transfer to intents
-       ▼
-┌─────────────────────────┐
-│  Intents Adapter        │
-│  - Receive wZEC         │
-│  - Forward to payroll   │
-└──────┬──────────────────┘
-       │ 5. Company balance updated
-       ▼
-┌─────────────────────────┐
-│  Payroll Contract       │
-│  - Company can pay      │
-│  - Employees withdraw   │
-└─────────────────────────┘
+🌉 Zcash → NEAR Bridge Relayer
+================================
+
+✅ Connected to Zcash testnet
+  Block height: 1234567
+
+Custody Account: 550e8400-e29b-41d4-a716-446655440000
+Custody Balance: 0.5 ZEC
+
+✅ Connected as: relayer.your-account.testnet
+  Balance: 10.5 NEAR
+
+🚀 Relayer started! Monitoring for deposits...
+
+📦 New Zcash blocks: 1234567 → 1234570
+
+🔔 New deposit detected!
+  Txid: abc123...
+  Amount: 0.01 ZEC (1000000 zatoshis)
+  Receiver: company.your-account.testnet
+  ✅ Minted successfully!
+  NEAR tx: def456...
 ```
-
-## Troubleshooting
-
-### "Zcash connection failed"
-
-```bash
-# Check if zcashd is running
-ps aux | grep zcashd
-
-# Start if not running
-zcashd -testnet -daemon
-
-# Check RPC is accessible
-curl --user zcashrpc:password \
-  --data-binary '{"jsonrpc":"1.0","id":"test","method":"getinfo"}' \
-  http://127.0.0.1:18232
-```
-
-### "NEAR connection failed"
-
-```bash
-# Check credentials exist
-ls ~/.near-credentials/testnet/
-
-# Login if missing
-near login
-
-# Test connection
-near state relayer.your-account.testnet --networkId testnet
-```
-
-### "Mint failed: Owner only"
-
-The relayer account needs to be the owner of the wZEC contract, or the owner needs to have authorized the relayer as a minter.
-
-### Transaction Not Detected
-
-- Ensure transaction has 1+ confirmations (~2.5 minutes)
-- Check relayer is running and polling
-- Verify custody address is correct
-- Check `relayer-state.json` for last processed block
-
-## Production Considerations
-
-⚠️ **This is a testnet demo!** For production:
-
-1. **Security**:
-   - Use hardware wallet for custody address
-   - Implement multi-sig for large amounts
-   - Add rate limiting and anomaly detection
-   - Encrypt sensitive data
-
-2. **Reliability**:
-   - Run multiple relayers for redundancy
-   - Add retry logic and error recovery
-   - Monitor with alerting
-   - Database instead of JSON state file
-
-3. **Compliance**:
-   - KYC/AML for large deposits
-   - Transaction monitoring
-   - Audit logging
-
-4. **Testing**:
-   - Comprehensive test suite
-   - Mainnet dry-run period
-   - Bug bounty program
 
 ## Next Steps
 
-- [ ] Implement withdrawal processing (NEAR → Zcash)
-- [ ] Add database for state tracking
-- [ ] Web dashboard for monitoring
-- [ ] Alerts for errors and large transactions
-- [ ] Multi-sig custody address
-- [ ] Mainnet deployment (with audit)
+- [ ] Implement withdrawal processing
+- [ ] Add monitoring dashboard
+- [ ] Add metrics/alerting
+- [ ] Add database for state (vs JSON file)
+- [ ] Add multi-sig custody support
 
-## Resources
+## See Also
 
-- [Zcash Testnet Setup Guide](../docs/ZCASH_TESTNET_SETUP.md)
-- [NEAR Intents Manual Testing](../docs/INTENTS_MANUAL_TESTING.md)
-- [Zcash RPC Documentation](https://zcash.readthedocs.io/en/latest/rtd_pages/rpc.html)
-- [NEAR API JS Docs](https://docs.near.org/tools/near-api-js)
+- **Zallet Setup:** [../docs/ZCASH_SETUP.md](../docs/ZCASH_SETUP.md)
+- **RPC Reference:** [../docs/ZCASH_RPC_REFERENCE.md](../docs/ZCASH_RPC_REFERENCE.md)
+- **Gap Analysis:** [../docs/ZCASH_INTEGRATION_GAP_ANALYSIS.md](../docs/ZCASH_INTEGRATION_GAP_ANALYSIS.md)
+- **NEAR SDK:** [../sdk/](../sdk/)

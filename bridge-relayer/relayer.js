@@ -16,7 +16,7 @@ const path = require('path');
 const ZCASH_RPC = `http://${process.env.ZCASH_RPC_HOST}:${process.env.ZCASH_RPC_PORT}`;
 const ZCASH_USER = process.env.ZCASH_RPC_USER;
 const ZCASH_PASS = process.env.ZCASH_RPC_PASSWORD;
-const CUSTODY_ADDRESS = process.env.ZCASH_CUSTODY_ADDRESS;
+const CUSTODY_ACCOUNT_UUID = process.env.ZCASH_CUSTODY_ACCOUNT_UUID;
 
 const NEAR_NETWORK = process.env.NEAR_NETWORK || 'testnet';
 const WZEC_CONTRACT = process.env.WZEC_CONTRACT;

@@ -1,17 +1,39 @@
 {
-  "name": "zcash-near-bridge-relayer",
-  "version": "1.0.0",
-  "description": "Bridge relayer for Zcash testnet to NEAR testnet",
-  "main": "relayer.js",
+  "name": "@near-private-payroll/bridge-relayer",
+  "version": "0.1.0",
+  "description": "TypeScript bridge relayer for Zcash testnet to NEAR testnet",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "start": "node relayer.js",
-    "monitor": "node monitor.js"
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "clean": "rm -rf dist"
   },
+  "keywords": [
+    "zcash",
+    "near",
+    "bridge",
+    "relayer",
+    "zallet"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
     "near-api-js": "^4.0.3",
     "axios": "^1.6.0",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "@near-private-payroll/sdk": "file:../sdk"
   },
-  "author": "",
-  "license": "MIT"
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/jest": "^29.0.0",
+    "typescript": "^5.3.0",
+    "ts-node": "^10.9.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0"
+  }
 }
