@@ -1,7 +1,19 @@
 # NEAR Intents Integration - Implementation Progress
 
-**Last Updated:** 2025-11-27
+**Last Updated:** 2025-11-30
 **Status:** Core Implementation Complete ✅ | Testing & Deployment In Progress 🚧
+
+---
+
+## 🚀 Current Status & Next Steps
+
+**Looking for what to do next?** See [ZCASH_INTEGRATION_GAP_ANALYSIS.md](./ZCASH_INTEGRATION_GAP_ANALYSIS.md) for:
+- ⏳ Current Zebra/Zallet sync status (55% complete, ~1-2 hours remaining)
+- 🔧 Required relayer code updates (Zallet compatibility)
+- ❌ Specific missing components (custody address, testnet deployment)
+- 📋 Step-by-step next actions with code examples
+
+**This document below tracks completed implementation work.**
 
 ---
 
@@ -355,8 +367,15 @@ cargo build --target wasm32-unknown-unknown --release
 1. ✅ ~~E2E Tests~~ - COMPLETE
 2. ✅ ~~Deployment Script~~ - COMPLETE
 3. **Testnet Deployment** - Deploy and test on real testnet
-4. **Zcash Testnet Integration** - Connect to real Zcash testnet
-5. **Relayer Service** - Implement automated bridge confirmations
+4. 🚧 **Zcash Testnet Integration** - IN PROGRESS
+   - ✅ Zebra testnet node running at 127.0.0.1:18232 (55% synced)
+   - ✅ Zallet wallet built and configured (waiting for Zebra sync completion)
+   - ⏳ Waiting for Zebra to reach ~90% sync before Zallet wallet RPC available
+   - 📝 **See:** `docs/ZCASH_INTEGRATION_GAP_ANALYSIS.md` for complete status & next steps ⭐
+5. 🔧 **Relayer Service Updates** - Update for Zebra/Zallet compatibility
+   - Current relayer uses deprecated zcashd RPC commands
+   - Need to update for Zallet account UUID model
+   - **See:** `docs/ZCASH_INTEGRATION_GAP_ANALYSIS.md` Section 3 for required changes
 6. **Demo Script** (Optional) - SDK-based programmatic example
 7. **Security Audit** - Third-party audit before mainnet
 
@@ -364,11 +383,24 @@ cargo build --target wasm32-unknown-unknown --release
 
 ## Resources
 
+### Core Documentation
 - **Architecture:** [docs/CROSS_CHAIN_INTENTS.md](./CROSS_CHAIN_INTENTS.md)
+- **Manual Testing Guide:** [docs/INTENTS_MANUAL_TESTING.md](./INTENTS_MANUAL_TESTING.md)
+- **Deployment Guide:** [docs/DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)
 - **Privacy Analysis:** [docs/PRIVACY_ANALYSIS.md](./PRIVACY_ANALYSIS.md)
 - **Project README:** [../README.md](../README.md)
+
+### Zcash Integration
+- **⭐ Integration Status & Gaps:** [docs/ZCASH_INTEGRATION_GAP_ANALYSIS.md](./ZCASH_INTEGRATION_GAP_ANALYSIS.md) - **START HERE**
+- **Zcash Setup (Zebra + Zallet):** [docs/ZCASH_SETUP.md](./ZCASH_SETUP.md) - Complete setup guide
+- **Zcash RPC Commands:** [docs/ZCASH_RPC_REFERENCE.md](./ZCASH_RPC_REFERENCE.md) - All wallet commands
+- **Quick Command Reference:** [ZCASH_COMMAND_REFERENCE.md](../ZCASH_COMMAND_REFERENCE.md) - Copy-paste commands
+- **Bridge Relayer:** [bridge-relayer/README.md](../bridge-relayer/README.md)
+
+### External Links
 - **NEAR Intents Docs:** https://docs.near-intents.org
-- **Zcash Address Formats:** https://zcash.readthedocs.io/en/latest/rtd_pages/addresses.html
+- **Zallet Documentation:** https://zcash.github.io/wallet/
+- **Zebra Documentation:** https://zebra.zfnd.org/
 
 ---
 
@@ -380,11 +412,28 @@ cargo build --target wasm32-unknown-unknown --release
 
 ---
 
-**Last Updated:** 2025-11-28
-**Last Verified:** 2025-11-28
+**Last Updated:** 2025-11-30
+**Last Verified:** 2025-11-30
 **Contract Versions:** All contracts on near-sdk 5.5.0+
 
 **Test Summary:**
 - Integration Tests: 7/7 passing ✅
 - E2E Tests: 5/5 passing ✅
 - **Total: 12/12 tests passing** ✅
+
+**Zcash Integration Status (2025-11-30):**
+- ✅ Zebra testnet node: Running, 55% synced
+- ✅ Zallet wallet: Built, configured, awaiting Zebra sync
+- ✅ Complete documentation: Setup, RPC reference, quick commands
+- 🔧 Bridge relayer: Needs Zallet compatibility updates
+- ⏳ Testing: Blocked until Zebra reaches ~90% sync
+
+**Documentation:**
+- ✅ Architecture guide (CROSS_CHAIN_INTENTS.md)
+- ✅ Deployment guide (DEPLOYMENT_GUIDE.md)
+- ✅ Manual testing guide (INTENTS_MANUAL_TESTING.md)
+- ✅ **Zcash integration gap analysis (ZCASH_INTEGRATION_GAP_ANALYSIS.md)** ⭐ NEW!
+- ✅ **Zcash setup guide (ZCASH_SETUP.md)** - Zebra + Zallet
+- ✅ **Zcash RPC reference (ZCASH_RPC_REFERENCE.md)** - Complete API
+- ✅ **Zcash quick commands (ZCASH_COMMAND_REFERENCE.md)** - Copy-paste
+- ✅ **Bridge relayer implementation (bridge-relayer/)** - Ready for updates

@@ -1,0 +1,17 @@
+{
+  "name": "zcash-near-bridge-relayer",
+  "version": "1.0.0",
+  "description": "Bridge relayer for Zcash testnet to NEAR testnet",
+  "main": "relayer.js",
+  "scripts": {
+    "start": "node relayer.js",
+    "monitor": "node monitor.js"
+  },
+  "dependencies": {
+    "near-api-js": "^4.0.3",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1"
+  },
+  "author": "",
+  "license": "MIT"
+}

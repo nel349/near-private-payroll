@@ -125,7 +125,8 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 ### Critical
 - [x] Implement real RISC Zero verification ✅ DONE (Groth16 on-chain)
 - [ ] Implement proper encryption (NaCl/ECIES) - Currently using placeholders
-- [ ] Bridge relayer service - For wZEC ↔ Zcash
+- [x] Zcash testnet infrastructure ✅ DONE (Zebra + Zallet running, 55% synced)
+- [ ] Bridge relayer updates - Update for Zallet compatibility (see ZCASH_INTEGRATION_GAP_ANALYSIS.md)
 
 ### Short-term
 - [ ] NEAR testnet deployment
