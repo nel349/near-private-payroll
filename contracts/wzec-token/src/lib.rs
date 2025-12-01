@@ -121,8 +121,14 @@ impl WZecToken {
         let burner = env::predecessor_account_id();
 
         // Validate Zcash address format (basic check)
+        // Mainnet: zs (Sapling), zc (Sprout), u1 (Unified)
+        // Testnet: ztestsapling, utest1 (Unified)
         assert!(
-            zcash_shielded_address.starts_with("zs") || zcash_shielded_address.starts_with("zc"),
+            zcash_shielded_address.starts_with("zs")
+                || zcash_shielded_address.starts_with("zc")
+                || zcash_shielded_address.starts_with("u1")
+                || zcash_shielded_address.starts_with("ztestsapling")
+                || zcash_shielded_address.starts_with("utest1"),
             "Invalid Zcash shielded address"
         );
 
