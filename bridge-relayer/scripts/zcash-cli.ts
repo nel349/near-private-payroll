@@ -137,28 +137,25 @@ class ZcashCLI {
   async getBalance(accountUuid?: string): Promise<void> {
     console.log('💰 Getting balance...\n');
 
-    const accounts = await this.rpc<any[]>('z_listaccounts');
-
-    if (accounts.length === 0) {
-      console.log('No accounts found.');
-      return;
+    if (accountUuid) {
+      console.log(`⚠️  Note: Zallet's z_gettotalbalance shows total wallet balance (all accounts combined)`);
+      console.log(`    Per-account balance is not available in current Zallet version.\n`);
     }
 
-    const account = accountUuid
-      ? accounts.find(a => a.account_uuid === accountUuid)
-      : accounts[0];
+    // z_gettotalbalance params: minconf (default 1), include_watchonly (default false)
+    const balance = await this.rpc<any>('z_gettotalbalance', [1, true]);
 
-    if (!account) {
-      console.error(`Account ${accountUuid} not found`);
-      return;
+    console.log(`Transparent: ${balance.transparent} ZEC`);
+    console.log(`Private (Shielded): ${balance.private} ZEC`);
+    console.log(`Total: ${balance.total} ZEC\n`);
+
+    if (parseFloat(balance.total) === 0) {
+      console.log('💡 Wallet is empty. To receive testnet ZEC:');
+      console.log('   1. Get an address: npm run zcash-cli generate-address');
+      console.log('   2. Use a testnet faucet:');
+      console.log('      - https://faucet.testnet.z.cash/');
+      console.log('      - https://testnet.zecfaucet.com/');
     }
-
-    console.log(`Account: ${account.account_uuid}\n`);
-
-    const balance = await this.rpc<any>('z_getbalanceforaccount', [account.account_uuid]);
-
-    console.log(`Balance: ${balance.balance / 100000000} ZEC`);
-    console.log(`Unconfirmed: ${balance.unconfirmed_balance / 100000000} ZEC`);
   }
 
   async checkSync(): Promise<void> {

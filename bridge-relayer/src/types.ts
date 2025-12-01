@@ -6,14 +6,15 @@
 
 export interface ZalletAccount {
   account_uuid: string;
-  has_spending_key: boolean;
+  account: number; // Account index (0, 1, 2, ...)
   addresses: ZalletAddress[];
 }
 
 export interface ZalletAddress {
   diversifier_index: number;
-  address?: string;
-  receiver_types: string[];
+  ua?: string; // Unified address (in z_listaccounts response)
+  address?: string; // Full address string (in listaddresses response)
+  receiver_types?: string[];
 }
 
 export interface ZalletBalance {
@@ -51,9 +52,9 @@ export interface ZalletOperationStatus {
 export interface BlockchainInfo {
   chain: string;
   blocks: number;
-  headers: number;
-  bestblockhash: string;
-  difficulty: number;
+  headers?: number;
+  bestblockhash?: string;
+  difficulty?: number;
   verificationprogress: number;
 }
 
