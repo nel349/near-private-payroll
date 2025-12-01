@@ -151,7 +151,7 @@ mkdir -p ~/.zallet
   -o ~/.zallet/zallet.toml
 ```
 
-#### Step 4: Configure for Testnet + Zebra
+#### Step 4: Configure for Testnet + Zebra + RPC
 
 ```bash
 # Set network to testnet
@@ -160,8 +160,37 @@ sed -i '' 's/network = "main"/network = "test"/' ~/.zallet/zallet.toml
 # Point to local Zebra node
 sed -i '' 's/#validator_address = UNSET/validator_address = "127.0.0.1:18232"/' ~/.zallet/zallet.toml
 
-# Enable RPC (optional, for remote access)
+# Enable RPC on port 28232
 sed -i '' 's/#bind = \[\]/bind = ["127.0.0.1:28232"]/' ~/.zallet/zallet.toml
+```
+
+**Add RPC authentication:**
+
+Edit `~/.zallet/zallet.toml` and add at the end:
+
+```toml
+[[rpc.auth]]
+user = "zcashrpc"
+password = "testpass123"
+```
+
+Or use this command:
+```bash
+cat >> ~/.zallet/zallet.toml << 'EOF'
+
+[[rpc.auth]]
+user = "zcashrpc"
+password = "testpass123"
+EOF
+```
+
+**Verify RPC config:**
+```bash
+grep -A2 "\[\[rpc.auth\]\]" ~/.zallet/zallet.toml
+# Should show:
+# [[rpc.auth]]
+# user = "zcashrpc"
+# password = "testpass123"
 ```
 
 #### Step 5: Initialize Encryption
@@ -206,6 +235,43 @@ INFO Launching Chain Fetch Service..
 ```
 
 Leave this running in a terminal, or run in background with `&` or `tmux`/`screen`.
+
+#### Step 8: Wait for Zallet RPC to Start
+
+**IMPORTANT:** Zallet's RPC server (port 28232) does NOT start immediately!
+
+**RPC Availability Timeline:**
+1. **Zebra 0-20%:** Zallet won't start at all
+2. **Zebra 20-90%:** Zallet starts, but RPC port 28232 is NOT open yet
+3. **Zebra 90%+:** Zallet RPC becomes available on port 28232
+
+**Check Zebra sync status:**
+```bash
+curl -s -H "Content-Type: application/json" \
+  --user "__cookie__:$(grep validator_password ~/.zallet/zallet.toml | cut -d'"' -f2)" \
+  --data-binary '{"jsonrpc":"1.0","id":"1","method":"getblockchaininfo","params":[]}' \
+  http://127.0.0.1:18232/ | jq '.result | {sync: (.verificationprogress * 100 | floor), blocks, headers}'
+```
+
+**Expected output:**
+```json
+{
+  "sync": 78,
+  "blocks": 2744000,
+  "headers": 2744000
+}
+```
+
+**Check if Zallet RPC is ready:**
+```bash
+lsof -i :28232 || echo "Zallet RPC not started yet - wait for Zebra to reach ~90%"
+```
+
+**When Zallet RPC starts, you'll see:**
+```bash
+COMMAND   PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+zallet  93072 norman   15u  IPv4 0x1234567890abcdef      0t0  TCP localhost:28232 (LISTEN)
+```
 
 ---
 
@@ -260,13 +326,25 @@ ps aux | grep zallet
 
 ### Test Zallet RPC Connection
 
-Once Zallet has RPC enabled:
+**Wait until Zebra is at ~90% sync**, then test RPC:
 
 ```bash
+# Test basic connection
 curl --user "zcashrpc:testpass123" \
   --data-binary '{"jsonrpc":"1.0","id":"1","method":"z_listaccounts","params":[]}' \
+  -H 'content-type: text/plain;' \
   http://127.0.0.1:28232/
 ```
+
+**Expected output (when RPC is ready):**
+```json
+{"result":[{"account_uuid":"...","has_spending_key":true}],"error":null,"id":"1"}
+```
+
+**If you get "Connection refused":**
+- Check Zebra sync: Must be ~90%+ (see Step 8)
+- Check Zallet is running: `ps aux | grep zallet`
+- Check RPC port is open: `lsof -i :28232`
 
 ---
 
@@ -328,9 +406,23 @@ docker rm zebra-testnet
 
 ### Zallet RPC Not Working
 
-**Error:** Connection refused on port 28232
-**Cause:** RPC not enabled in config
-**Solution:** Add RPC config (see Part 2, Step 4)
+**Error:** `Connection refused` on port 28232
+**Cause 1:** Zebra not synced to ~90% yet
+**Solution:** Check Zebra sync status (see Step 8). Wait until ~90%.
+
+**Cause 2:** RPC not enabled in config
+**Solution:** Verify RPC bind setting in `~/.zallet/zallet.toml`:
+```bash
+grep "bind" ~/.zallet/zallet.toml
+# Should show: bind = ["127.0.0.1:28232"]
+```
+
+**Cause 3:** Zallet not running
+**Solution:** Check if Zallet process is running:
+```bash
+ps aux | grep zallet
+# Should show: zallet -d ~/.zallet start
+```
 
 ---
 

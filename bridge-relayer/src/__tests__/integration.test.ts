@@ -15,7 +15,7 @@ import { StateService } from '../services/state.service';
 
 const SKIP = process.env.SKIP_INTEGRATION === 'true';
 
-describe.skip('Integration Tests', () => {
+describe('Integration Tests', () => {
   let zcash: ZcashService;
 
   beforeAll(() => {
