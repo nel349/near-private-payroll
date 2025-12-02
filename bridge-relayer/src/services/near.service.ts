@@ -30,10 +30,15 @@ export class NearService {
       `${process.env.HOME}/.near-credentials`
     );
 
+    // Use recommended RPC endpoint (rpc.near.org is deprecated)
+    const nodeUrl = this.network === 'testnet'
+      ? 'https://rpc.testnet.fastnear.com'
+      : 'https://rpc.mainnet.fastnear.com';
+
     const near = await connect({
       networkId: this.network,
       keyStore,
-      nodeUrl: `https://rpc.${this.network}.near.org`,
+      nodeUrl,
       walletUrl: `https://wallet.${this.network}.near.org`,
       helperUrl: `https://helper.${this.network}.near.org`,
     });

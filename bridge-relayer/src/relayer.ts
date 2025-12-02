@@ -164,19 +164,20 @@ export class BridgeRelayer {
       await this.monitorDeposits();
     }, this.pollInterval);
 
-    // Start withdrawal monitoring if zcashd is enabled
-    if (this.zcashd) {
-      console.log('🔄 Starting withdrawal monitoring...\n');
-
-      // Initial withdrawal check
-      await this.monitorWithdrawals();
-
-      // Start withdrawal polling loop
-      const withdrawalInterval = this.config.withdrawalPollInterval || this.pollInterval;
-      this.withdrawalPollTimer = setInterval(async () => {
-        await this.monitorWithdrawals();
-      }, withdrawalInterval);
+    // Start withdrawal monitoring (works with both Zallet and zcashd)
+    console.log('🔄 Starting withdrawal monitoring...\n');
+    if (!this.zcashd) {
+      console.log('Note: Using Zallet for withdrawals (zcashd not configured)\n');
     }
+
+    // Initial withdrawal check
+    await this.monitorWithdrawals();
+
+    // Start withdrawal polling loop
+    const withdrawalInterval = this.config.withdrawalPollInterval || this.pollInterval;
+    this.withdrawalPollTimer = setInterval(async () => {
+      await this.monitorWithdrawals();
+    }, withdrawalInterval);
   }
 
   /**
@@ -201,31 +202,42 @@ export class BridgeRelayer {
    */
   private async monitorDeposits(): Promise<void> {
     try {
-      const currentBlock = await this.zcash.getCurrentBlock();
-      const lastProcessed = this.state.get().lastProcessedBlock;
+      // Get new deposits (filtering by processed txids)
+      // Note: Zallet doesn't provide reliable block height, so we always check for new txs
+      const deposits = await this.zcash.getNewDeposits(
+        1, // minConfirmations
+        this.state.getProcessedTxids()
+      );
 
-      if (currentBlock > lastProcessed) {
-        console.log(`📦 New Zcash blocks: ${lastProcessed} → ${currentBlock}`);
+      if (deposits.length > 0) {
+        console.log(`📦 Found ${deposits.length} new deposit(s)\n`);
 
-        // Get new deposits
-        const deposits = await this.zcash.getNewDeposits(
-          1, // minConfirmations
-          this.state.getProcessedTxids()
-        );
-
-        if (deposits.length > 0) {
-          console.log(`Found ${deposits.length} new deposit(s)\n`);
-
-          for (const deposit of deposits) {
-            await this.processDeposit(deposit);
-          }
+        for (const deposit of deposits) {
+          await this.processDeposit(deposit);
         }
-
-        // Update last processed block
-        this.state.setLastProcessedBlock(currentBlock);
       }
+
+      // Update block height for tracking (even if 0 for Zallet)
+      const currentBlock = await this.zcash.getCurrentBlock();
+      this.state.setLastProcessedBlock(currentBlock);
     } catch (error: any) {
       console.error('❌ Error monitoring deposits:', error.message);
+    }
+  }
+
+  /**
+   * Decode hex memo to readable string
+   */
+  private decodeMemo(memoHex?: string): string {
+    if (!memoHex) return '(none)';
+
+    try {
+      const buffer = Buffer.from(memoHex, 'hex');
+      const nullIndex = buffer.indexOf(0);
+      const contentLength = nullIndex === -1 ? buffer.length : nullIndex;
+      return buffer.slice(0, contentLength).toString('utf8') || '(empty)';
+    } catch (error) {
+      return '(invalid)';
     }
   }
 
@@ -236,7 +248,7 @@ export class BridgeRelayer {
     console.log('🔔 New deposit detected!');
     console.log(`  Txid: ${deposit.txid}`);
     console.log(`  Amount: ${deposit.amount} ZEC (${deposit.amountZat} zatoshis)`);
-    console.log(`  Memo: ${deposit.memo || '(none)'}`);
+    console.log(`  Memo: ${this.decodeMemo(deposit.memo)}`);
     console.log(`  Company ID: ${deposit.companyId || '(none)'}`);
     console.log(`  Receiver: ${deposit.receiverId}`);
     console.log(`  Confirmations: ${deposit.confirmations}`);
@@ -257,10 +269,6 @@ export class BridgeRelayer {
    * Monitor for new withdrawal requests (burn events)
    */
   private async monitorWithdrawals(): Promise<void> {
-    if (!this.zcashd) {
-      return;
-    }
-
     try {
       // Query NEAR for new burn events
       const withdrawals = await this.near.getNewWithdrawals(
@@ -288,11 +296,6 @@ export class BridgeRelayer {
    * Process a single withdrawal request
    */
   private async processWithdrawal(withdrawal: WithdrawalEvent): Promise<void> {
-    if (!this.zcashd) {
-      console.error('❌ Cannot process withdrawal: zcashd not available');
-      return;
-    }
-
     console.log('🔥 New withdrawal detected!');
     console.log(`  Burner: ${withdrawal.burner}`);
     console.log(`  Amount: ${withdrawal.amount} wZEC`);
@@ -304,26 +307,38 @@ export class BridgeRelayer {
       // Convert wZEC amount (8 decimals) to ZEC decimal
       const amount = parseFloat(withdrawal.amount) / 100000000;
 
-      // Get custody address
-      const fromAddress = await this.zcashd.getCustodyAddress();
+      console.log(`  Sending ${amount} ZEC...`);
 
-      // Send ZEC to destination
-      console.log(`  Sending ${amount} ZEC to ${withdrawal.zcash_shielded_address.substring(0, 20)}...`);
+      let txids: string[];
 
-      const opid = await this.zcashd.sendZec(
-        fromAddress,
-        withdrawal.zcash_shielded_address,
-        amount
-      );
+      // Use zcashd if available, otherwise use Zallet
+      if (this.zcashd) {
+        // zcashd: returns operation ID, need to wait for completion
+        const fromAddress = await this.zcashd.getCustodyAddress();
+        const opid = await this.zcashd.sendZec(
+          fromAddress,
+          withdrawal.zcash_shielded_address,
+          amount
+        );
 
-      console.log(`  Operation ID: ${opid}`);
-      console.log(`  Waiting for transaction to complete...`);
+        console.log(`  Operation ID: ${opid}`);
+        console.log(`  Waiting for transaction to complete...`);
 
-      // Wait for operation to complete
-      const txid = await this.zcashd.waitForOperation(opid);
+        const txid = await this.zcashd.waitForOperation(opid);
+        txids = [txid];
+      } else {
+        // Zallet: returns transaction IDs immediately
+        txids = await this.zcash.sendFromCustody(
+          withdrawal.zcash_shielded_address,
+          amount
+        );
+      }
 
       console.log(`  ✅ ZEC sent successfully!`);
-      console.log(`  Zcash Txid: ${txid}\n`);
+      for (const txid of txids) {
+        console.log(`  Zcash Txid: ${txid}`);
+      }
+      console.log();
 
       // Mark as processed
       this.state.markWithdrawalProcessed(withdrawal.nonce);

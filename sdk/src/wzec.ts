@@ -2,7 +2,7 @@
  * wZEC Token Contract Interface
  */
 
-import { Contract, Account } from 'near-api-js';
+import { Contract, Account, transactions } from 'near-api-js';
 
 /** Contract methods interface */
 interface WZecContractMethods {
@@ -87,10 +87,27 @@ export class WZecToken {
     amount: string,
     zcashTxHash: string
   ): Promise<void> {
-    await this.contract.mint({
+    // Use transactions.functionCall for proper arg encoding
+    const argsObj = {
       receiver_id: receiverId,
       amount,
       zcash_tx_hash: zcashTxHash,
+    };
+
+    console.log('Minting with args:', JSON.stringify(argsObj));
+    const args = Buffer.from(JSON.stringify(argsObj));
+    console.log('Args buffer length:', args.length);
+
+    await this.account.signAndSendTransaction({
+      receiverId: this.contract.contractId,
+      actions: [
+        transactions.functionCall(
+          'mint',
+          args,
+          BigInt('300000000000000'),
+          BigInt('1')
+        ),
+      ],
     });
   }
 

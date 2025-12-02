@@ -164,17 +164,18 @@ export class ZcashService {
    */
   async getNewDeposits(minConfirmations: number = 1, processedTxids: string[]): Promise<DepositEvent[]> {
     const account = await this.getCustodyAccount();
-    const addresses = await this.getCustodyAddresses();
 
     // Get all unspent outputs
+    // Note: Zallet's z_listunspent only returns notes for the custody account,
+    // so we don't need to filter by address - ALL unspent notes belong to us
     const unspent = await this.rpc<ZalletUnspentOutput[]>('z_listunspent', [
       minConfirmations,
       9999999,
     ]);
 
-    // Filter for deposits to our custody account
+    // Filter out already processed transactions
     const deposits = unspent.filter(
-      (tx) => addresses.includes(tx.address) && !processedTxids.includes(tx.txid)
+      (tx) => !processedTxids.includes(tx.txid)
     );
 
     // Parse into deposit events
@@ -195,28 +196,47 @@ export class ZcashService {
   }
 
   /**
+   * Decode memo from hex to UTF-8 string
+   */
+  private decodeMemo(memo?: string): string {
+    if (!memo) return '';
+
+    try {
+      // Memo is hex-encoded (Zcash memo fields are 512 bytes, zero-padded)
+      const buffer = Buffer.from(memo, 'hex');
+
+      // Find the first null byte to determine actual content length
+      const nullIndex = buffer.indexOf(0);
+      const contentLength = nullIndex === -1 ? buffer.length : nullIndex;
+
+      // Decode only the actual content (before null padding)
+      return buffer.slice(0, contentLength).toString('utf8');
+    } catch (error) {
+      console.warn('Failed to decode memo:', error);
+      return '';
+    }
+  }
+
+  /**
    * Parse company ID from memo field
    */
   private parseCompanyId(memo?: string): string | undefined {
-    if (!memo) return undefined;
+    const decoded = this.decodeMemo(memo);
+    if (!decoded) return undefined;
 
-    try {
-      // Memo is hex-encoded
-      const decoded = Buffer.from(memo, 'hex').toString('utf8');
-
-      // Format: "company:account.testnet"
-      if (decoded.startsWith('company:')) {
-        return decoded.split(':')[1];
-      }
-    } catch (error) {
-      console.warn('Failed to parse memo:', error);
+    // Format: "company:account.testnet"
+    if (decoded.startsWith('company:')) {
+      return decoded.split(':')[1];
     }
 
     return undefined;
   }
 
   /**
-   * Send ZEC from custody account
+   * Send ZEC from custody account (for withdrawals)
+   * @param destinationAddress - Destination Zcash shielded address
+   * @param amount - Amount in ZEC (decimal)
+   * @returns Array of transaction IDs
    */
   async sendFromCustody(
     destinationAddress: string,
@@ -231,7 +251,12 @@ export class ZcashService {
 
     const fromAddress = addresses[0]; // Use first address
 
-    // Zallet's z_sendmany returns {txids: [...]} array
+    console.log(`  Sending ${amount} ZEC from custody account`);
+    console.log(`  From: ${fromAddress.substring(0, 30)}...`);
+    console.log(`  To:   ${destinationAddress.substring(0, 30)}...`);
+
+    // Zallet's z_sendmany returns {txids: [...]} array (no operation ID)
+    // This is different from zcashd which returns an operation ID
     const result = await this.rpc<{ txids: string[] }>('z_sendmany', [
       fromAddress,
       [
@@ -243,6 +268,10 @@ export class ZcashService {
       null, // minconf (automatic)
       null, // fee (automatic ZIP 317)
     ]);
+
+    if (!result.txids || result.txids.length === 0) {
+      throw new Error('z_sendmany returned no transaction IDs');
+    }
 
     return result.txids;
   }

@@ -172,9 +172,9 @@ pub fn ft_transfer(receiver_id: AccountId, amount: U128, memo: Option<String>)
 - ✅ Monitors Zcash deposits to custody address (using Zallet)
 - ✅ Mints wZEC on NEAR when deposits confirmed
 - ✅ Parses company ID from transaction memos
-- ✅ Dual wallet support: Zallet (deposits) + zcashd (withdrawals)
 - ✅ Monitors NEAR for Burn events
-- ✅ Sends ZEC on Zcash when withdrawals detected (using zcashd)
+- ✅ Sends ZEC on Zcash when withdrawals detected (using Zallet)
+- ✅ Flexible wallet support: Zallet (recommended) or zcashd (optional)
 - ⏳ End-to-end testing needed
 
 ---
