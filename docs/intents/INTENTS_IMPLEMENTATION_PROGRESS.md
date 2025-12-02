@@ -367,15 +367,18 @@ cargo build --target wasm32-unknown-unknown --release
 1. ✅ ~~E2E Tests~~ - COMPLETE
 2. ✅ ~~Deployment Script~~ - COMPLETE
 3. **Testnet Deployment** - Deploy and test on real testnet
-4. 🚧 **Zcash Testnet Integration** - IN PROGRESS
-   - ✅ Zebra testnet node running at 127.0.0.1:18232 (55% synced)
-   - ✅ Zallet wallet built and configured (waiting for Zebra sync completion)
-   - ⏳ Waiting for Zebra to reach ~90% sync before Zallet wallet RPC available
-   - 📝 **See:** `docs/ZCASH_INTEGRATION_GAP_ANALYSIS.md` for complete status & next steps ⭐
-5. 🔧 **Relayer Service Updates** - Update for Zebra/Zallet compatibility
-   - Current relayer uses deprecated zcashd RPC commands
-   - Need to update for Zallet account UUID model
-   - **See:** `docs/ZCASH_INTEGRATION_GAP_ANALYSIS.md` Section 3 for required changes
+4. ✅ **Zcash Testnet Integration** - COMPLETED (2025-12-02)
+   - ✅ Zebra testnet node synced and operational
+   - ✅ Zallet wallet RPC configured and tested
+   - ✅ Integration tests passing with Zallet
+5. ✅ **Bridge Relayer Service** - COMPLETED (2025-12-02)
+   - ✅ Bidirectional bridge operational (Zcash ↔ NEAR)
+   - ✅ Deposit monitoring with automatic wZEC minting
+   - ✅ Withdrawal execution to Zcash shielded addresses
+   - ✅ Privacy policy support for cross-pool transactions
+   - ✅ State persistence with crash recovery
+   - ✅ Async operation polling for Zcash transactions
+   - ✅ All integration tests passing
 6. **Demo Script** (Optional) - SDK-based programmatic example
 7. **Security Audit** - Third-party audit before mainnet
 

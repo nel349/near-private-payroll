@@ -15,6 +15,7 @@ This document describes the system architecture, data flows, and security model.
                     +--------v--------+
                     |  SDK LAYER      |
                     |  (TypeScript)   |
+                    |  + Intents SDK  |
                     +--------+--------+
                              |
 +------------------------------------------------------------+
@@ -29,33 +30,39 @@ This document describes the system architecture, data flows, and security model.
 |  | - disclosures|  |              |  |                |    |
 |  | - income_proofs|              |  |                |    |
 |  +--------------+  +--------------+  +----------------+    |
+|          |                                                  |
+|  +-------v--------+                                         |
+|  |    Intents     |  ← Cross-Chain Bridge                  |
+|  |    Adapter     |                                         |
+|  |                |                                         |
+|  | - deposits     |  Enables:                              |
+|  | - withdrawals  |  • Company deposits from Zcash         |
+|  | - chain_config |  • Employee withdrawals to Zcash       |
+|  | - relayers     |  • Multi-chain support (future)        |
+|  +----------------+                                         |
 +------------------------------------------------------------+
-                             |
-+------------------------------------------------------------+
-|                    RISC ZERO LAYER (Off-Chain)              |
-|                                                             |
-|  +---------------+  +---------------+  +---------------+   |
-|  | Payment Proof |  | Income Proof  |  | Balance Proof |   |
-|  |   Circuit     |  |   Circuit     |  |   Circuit     |   |
-|  |               |  |               |  |               |   |
-|  | Private:      |  | Private:      |  | Private:      |   |
-|  | - salary      |  | - payments[]  |  | - balance     |   |
-|  | - blinding    |  | - amounts[]   |  | - blinding    |   |
-|  |               |  |               |  |               |   |
-|  | Public:       |  | Public:       |  | Public:       |   |
-|  | - commitment  |  | - threshold   |  | - commitment  |   |
-|  | - match       |  | - result      |  | - sufficient  |   |
-|  +---------------+  +---------------+  +---------------+   |
-|                                                             |
-|              Generates STARK proofs (receipts)              |
-+------------------------------------------------------------+
-                             |
-+------------------------------------------------------------+
-|                    ZCASH LAYER (Value Transfer)             |
-|                                                             |
-|      Company Deposit --> Bridge Custody --> Employee Withdraw|
-|      (shielded tx)       (threshold sig)   (shielded tx)    |
-+------------------------------------------------------------+
+              |                      |
+     +--------v--------+    +--------v--------+
+     | RISC ZERO       |    | BRIDGE RELAYER  |
+     | (Off-Chain)     |    | (Off-Chain)     |
+     +-----------------+    +-----------------+
+     |                 |    |                 |
+     | Payment Proof   |    | Zallet RPC      |
+     | Income Proof    |    | Deposit Monitor |
+     | Balance Proof   |    | Withdrawal Exec |
+     |                 |    |                 |
+     | Generates       |    | Monitors Zcash  |
+     | STARK proofs    |    | Executes wZEC   |
+     +-----------------+    | bridge ops      |
+                            +-----------------+
+                                    |
+                            +-------v-------+
+                            | ZCASH NETWORK |
+                            | (Testnet)     |
+                            |               |
+                            | Shielded txs  |
+                            | Zallet wallet |
+                            +---------------+
 ```
 
 ## Circuit Image IDs
@@ -120,6 +127,48 @@ Built with RISC Zero 3.0 via `cargo risczero build`:
 - Actual salary amounts
 - Individual payment dates
 - Payment history details
+
+---
+
+## Cross-Chain Integration
+
+The system integrates with NEAR Intents protocol for cross-chain operations.
+
+### Intents Adapter Contract
+
+**Purpose**: Bridge between payroll system and external chains (Zcash, Ethereum, Solana, Bitcoin)
+
+**Key Features**:
+- Routes deposits from external chains to payroll contract
+- Initiates cross-chain withdrawals via NEAR Intents
+- Validates destination addresses for all supported chains
+- Tracks pending deposits and withdrawals
+- Configurable fees per chain
+
+**Supported Chains**:
+| Chain | Deposits | Withdrawals | Fee | Status |
+|-------|----------|-------------|-----|--------|
+| Zcash | ✅ | ✅ | 0.5% | Operational |
+| NEAR  | ✅ | ✅ | 0% | Operational |
+| Solana | ❌ | ✅ | 0.3% | Planned |
+| Ethereum | ❌ | ✅ | 1.0% | Planned |
+| Bitcoin | ❌ | ✅ | 0.5% | Planned |
+
+### Bridge Relayer
+
+**Purpose**: Automated service connecting Zcash network with NEAR Protocol
+
+**Features**:
+- Monitors Zcash blockchain for deposits to custody address
+- Mints wZEC on NEAR when deposits are confirmed
+- Executes Zcash withdrawals when requested via intents adapter
+- Uses Zallet RPC (Zcash wallet with privacy policy support)
+- State persistence for crash recovery
+- Operation polling for async Zcash transactions
+
+**Status**: ✅ Fully operational (deployed 2025-12-02)
+
+**See**: `docs/cross-chain/CROSS_CHAIN_INTENTS.md` for detailed cross-chain architecture
 
 ---
 
@@ -307,17 +356,32 @@ NEAR Testnet/Mainnet:
 |       +-- Owner: company.{network}.near
 |       +-- wzec_token: wzec.{network}.near
 |       +-- zk_verifier: verifier.{network}.near
+|       +-- intents_adapter: intents.{network}.near
+|
++-- intents.{network}.near
+|   +-- Intents Adapter Contract
+|       +-- Owner: payroll.{network}.near (or separate admin)
+|       +-- Payroll: payroll.{network}.near
+|       +-- wZEC Token: wzec.{network}.near
+|       +-- Authorized Relayers: [relayer1.near, relayer2.near, ...]
 |
 +-- wzec.{network}.near
 |   +-- wZEC Token Contract (NEP-141)
-|       +-- Bridge Controller
+|       +-- Bridge Controller: intents.{network}.near
 |
 +-- verifier.{network}.near
     +-- ZK Verifier Contract
         +-- Image IDs: [income, payment, balance]
 
-Off-Chain:
+Off-Chain Services:
 +-- RISC Zero Prover (Local or Bonsai)
 +-- Proof Server (REST API)
++-- Bridge Relayer (Zcash ↔ NEAR)
+|   +-- Zallet RPC Connection
+|   +-- State Persistence (JSON)
+|   +-- Deposit Monitor (polling)
+|   +-- Withdrawal Executor (z_sendmany)
 +-- SDK (@near-private-payroll/sdk)
+    +-- Payroll SDK
+    +-- Intents SDK
 ```
