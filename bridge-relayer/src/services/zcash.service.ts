@@ -56,7 +56,12 @@ export class ZcashService {
       return response.data.result as T;
     } catch (error: any) {
       if (error.response) {
-        throw new Error(`Zallet RPC failed: ${error.response.status} ${error.response.statusText}`);
+        console.error('Zallet RPC error details:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data,
+        });
+        throw new Error(`Zallet RPC failed: ${error.response.status} ${error.response.statusText} - ${JSON.stringify(error.response.data)}`);
       }
       throw error;
     }
@@ -255,9 +260,8 @@ export class ZcashService {
     console.log(`  From: ${fromAddress.substring(0, 30)}...`);
     console.log(`  To:   ${destinationAddress.substring(0, 30)}...`);
 
-    // Zallet's z_sendmany returns {txids: [...]} array (no operation ID)
-    // This is different from zcashd which returns an operation ID
-    const result = await this.rpc<{ txids: string[] }>('z_sendmany', [
+    // z_sendmany returns an operation ID that we need to poll
+    const opid = await this.rpc<string>('z_sendmany', [
       fromAddress,
       [
         {
@@ -267,13 +271,23 @@ export class ZcashService {
       ],
       null, // minconf (automatic)
       null, // fee (automatic ZIP 317)
+      'AllowRevealedAmounts', // privacyPolicy - allow spending from different pools
     ]);
 
-    if (!result.txids || result.txids.length === 0) {
-      throw new Error('z_sendmany returned no transaction IDs');
+    console.log(`  Operation ID: ${opid}`);
+    console.log(`  Waiting for transaction to complete...`);
+
+    // Poll z_getoperationstatus until operation completes
+    const operation = await this.waitForOperation(opid);
+
+    if (!operation.result?.txids || operation.result.txids.length === 0) {
+      throw new Error('Operation succeeded but returned no transaction IDs');
     }
 
-    return result.txids;
+    const txid = operation.result.txids[0];
+    console.log(`  ✅ Transaction sent: ${txid}`);
+
+    return [txid];
   }
 
   /**

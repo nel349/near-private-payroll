@@ -12,6 +12,7 @@ near-sdk = { workspace = true, features = ["legacy"] }
 near-contract-standards = { workspace = true }
 serde = { workspace = true }
 borsh = { workspace = true }
+schemars = "0.8"
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }

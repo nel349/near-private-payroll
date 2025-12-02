@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { RelayerState } from '../types';
 
-const STATE_FILE = path.join(__dirname, '../../relayer-state.json');
+const DEFAULT_STATE_FILE = path.join(__dirname, '../../relayer-state.json');
 
 export class StateService {
   private state: RelayerState = {
@@ -16,14 +16,28 @@ export class StateService {
     pendingWithdrawals: [],
   };
 
+  private stateFile: string;
+
+  constructor(stateFile?: string) {
+    this.stateFile = stateFile || DEFAULT_STATE_FILE;
+  }
+
   /**
    * Load state from disk
    */
   load(): void {
     try {
-      if (fs.existsSync(STATE_FILE)) {
-        const data = fs.readFileSync(STATE_FILE, 'utf8');
-        this.state = JSON.parse(data);
+      if (fs.existsSync(this.stateFile)) {
+        const data = fs.readFileSync(this.stateFile, 'utf8');
+        const loadedState = JSON.parse(data);
+
+        // Migrate old state format (add missing fields with defaults)
+        this.state = {
+          ...loadedState,
+          processedWithdrawalNonces: loadedState.processedWithdrawalNonces || [],
+          pendingWithdrawals: loadedState.pendingWithdrawals || [],
+        };
+
         console.log('✅ Loaded previous state');
         console.log(`   Last processed block: ${this.state.lastProcessedBlock}`);
         console.log(`   Processed txids: ${this.state.processedTxids.length}`);
@@ -40,7 +54,7 @@ export class StateService {
    */
   save(): void {
     try {
-      fs.writeFileSync(STATE_FILE, JSON.stringify(this.state, null, 2));
+      fs.writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2));
     } catch (error: any) {
       console.error('Failed to save state:', error.message);
     }

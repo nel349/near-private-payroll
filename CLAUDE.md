@@ -120,13 +120,21 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 - Image ID registration tests
 - ✅ **Real proof verification tests passing on NEAR**
 
+**Bridge Relayer**: ✅ Fully operational (2025-12-02)
+- Zcash → NEAR deposits (automatic wZEC minting)
+- NEAR → Zcash withdrawals (automatic ZEC sending)
+- Zallet RPC integration with privacy policy support
+- Operation polling for async Zcash transactions
+- State persistence with backward-compatible migration
+- Production-ready bidirectional bridge
+
 ## TODO
 
 ### Critical
 - [x] Implement real RISC Zero verification ✅ DONE (Groth16 on-chain)
 - [ ] Implement proper encryption (NaCl/ECIES) - Currently using placeholders
-- [x] Zcash testnet infrastructure ✅ DONE (Zebra + Zallet running, 55% synced)
-- [ ] Bridge relayer updates - Update for Zallet compatibility (see ZCASH_INTEGRATION_GAP_ANALYSIS.md)
+- [x] Zcash testnet infrastructure ✅ DONE (Zallet with Zcash testnet)
+- [x] Bridge relayer ✅ DONE (Zallet-compatible, both directions working)
 
 ### Short-term
 - [ ] NEAR testnet deployment
@@ -158,6 +166,14 @@ fn compute_commitment(value: u64, blinding: &[u8; 32]) -> [u8; 32] {
 - v3.0.x selector: `0x73c457ba`, v5.0.x selector: `0xa7b87ed1`
 - **Endianness on NEAR**: ALL proof data must be converted from BE → LE
   - See `docs/RISC0_GROTH16_NEAR_ARCHITECTURE.md` for complete guide
+
+### Zallet / Zcash Bridge
+- Use Zallet RPC (zcashd-compatible JSON-RPC interface)
+- **Privacy Policy**: `z_sendmany` requires `'AllowRevealedAmounts'` when spending across pools (Orchard → Sapling)
+- **Async Operations**: `z_sendmany` returns operation ID, poll with `z_getoperationstatus` until complete
+- **Address Types**: Support both unified addresses (UA) and Sapling addresses
+- **State Migration**: Use spread operator with defaults for backward-compatible state loading
+- **Memo Encoding**: Zcash memos are hex-encoded, 512 bytes, zero-padded
 
 ## Privacy Analysis
 

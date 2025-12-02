@@ -93,33 +93,54 @@ export class NearService {
 
   /**
    * Monitor for new burn events (withdrawals)
-   * Query recent transactions and look for EVENT_BURN_FOR_ZCASH logs
+   * Queries on-chain withdrawal requests stored by the contract
    */
   async getNewWithdrawals(processedNonces: number[]): Promise<WithdrawalEvent[]> {
     try {
-      // Query contract logs for burn events
-      // For production, use indexer or streaming API
-      // For now, query recent transactions
-      const result = await this.account.connection.provider.query({
-        request_type: 'view_state',
-        finality: 'final',
-        account_id: this.wzecContractId,
-        prefix_base64: '',
-      });
+      const withdrawals: WithdrawalEvent[] = [];
 
-      // In production, you'd use NEAR indexer or streaming API
-      // For now, we'll poll using a simple approach
-      // The contract emits: log!("EVENT_BURN_FOR_ZCASH:{}", serde_json::to_string(&event))
+      // Get current nonce
+      console.log('  📊 Querying current withdrawal nonce...');
+      const currentNonce = await this.wzec.getWithdrawalNonce();
+      console.log(`  📊 Current nonce: ${currentNonce}`);
+      const lastProcessedNonce = processedNonces.length > 0
+        ? Math.max(...processedNonces)
+        : 0;
 
-      // This is a simplified implementation
-      // TODO: Implement proper event monitoring using:
-      // 1. NEAR Lake indexer
-      // 2. WebSocket streaming API
-      // 3. Or transaction history queries
+      if (currentNonce > 0 && currentNonce > lastProcessedNonce) {
+        console.log(`  🔥 Detected ${currentNonce - lastProcessedNonce} new withdrawal(s)`);
 
-      return [];
+        // Query each unprocessed withdrawal request
+        for (let nonce = lastProcessedNonce + 1; nonce <= currentNonce; nonce++) {
+          try {
+            console.log(`    🔍 Querying withdrawal request ${nonce}...`);
+            const request = await this.wzec.getWithdrawalRequest(nonce);
+            console.log(`    ✅ Got withdrawal ${nonce}:`, request ? 'found' : 'null');
+
+            if (request && request.zcash_shielded_address) {
+              console.log(`    • Withdrawal ${nonce}: ${request.amount} wZEC → ${request.zcash_shielded_address.substring(0, 20)}...`);
+
+              withdrawals.push({
+                burner: request.burner,
+                amount: request.amount,
+                zcash_shielded_address: request.zcash_shielded_address,
+                nonce: request.nonce,
+                nearTxHash: '', // Will be populated by relayer
+              });
+            } else {
+              console.warn(`    ⚠️  Warning: Withdrawal request ${nonce} not found on-chain`);
+            }
+          } catch (error: any) {
+            console.warn(`    ⚠️  Error querying withdrawal ${nonce}:`, error.message);
+            console.warn(`    Stack:`, error.stack);
+          }
+        }
+      }
+
+      return withdrawals;
     } catch (error: any) {
       console.error('Error querying withdrawals:', error.message);
+      console.error('Stack:', error.stack);
       return [];
     }
   }

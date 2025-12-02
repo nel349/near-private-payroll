@@ -19,12 +19,14 @@ use near_contract_standards::fungible_token::metadata::{
 };
 use near_contract_standards::fungible_token::FungibleToken;
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use near_sdk::collections::LazyOption;
+#[cfg(not(target_arch = "wasm32"))]
+use near_sdk::borsh::BorshSchema;
+use near_sdk::collections::{LazyOption, LookupMap};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::serde_json;
 use near_sdk::{
-    env, log, near, near_bindgen, AccountId, BorshStorageKey, NearToken, PanicOnDefault, Promise,
+    env, log, near, near_bindgen, AccountId, BorshStorageKey, NearToken, PanicOnDefault,
     PromiseOrValue,
 };
 
@@ -33,6 +35,7 @@ use near_sdk::{
 pub enum StorageKey {
     FungibleToken,
     Metadata,
+    WithdrawalRequests,
 }
 
 /// Event emitted when wZEC is burned for Zcash withdrawal
@@ -43,6 +46,19 @@ pub struct BurnForZcashEvent {
     pub amount: U128,
     pub zcash_shielded_address: String,
     pub nonce: u64,
+}
+
+/// Withdrawal request stored on-chain for relayer to process
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(BorshSchema))]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct WithdrawalRequest {
+    pub burner: AccountId,
+    pub amount: U128,
+    pub zcash_shielded_address: String,
+    pub nonce: u64,
+    pub timestamp: u64,
 }
 
 #[near_bindgen]
@@ -61,6 +77,8 @@ pub struct WZecToken {
     withdrawal_nonce: u64,
     /// Contract owner (can update bridge controller)
     owner: AccountId,
+    /// Withdrawal requests (nonce -> request details)
+    withdrawal_requests: LookupMap<u64, WithdrawalRequest>,
 }
 
 #[near_bindgen]
@@ -85,6 +103,7 @@ impl WZecToken {
             total_locked_zec: 0,
             withdrawal_nonce: 0,
             owner,
+            withdrawal_requests: LookupMap::new(StorageKey::WithdrawalRequests),
         };
 
         this
@@ -122,13 +141,13 @@ impl WZecToken {
 
         // Validate Zcash address format (basic check)
         // Mainnet: zs (Sapling), zc (Sprout), u1 (Unified)
-        // Testnet: ztestsapling, utest1 (Unified)
+        // Testnet: ztestsapling, utest (Unified/Sapling)
         assert!(
             zcash_shielded_address.starts_with("zs")
                 || zcash_shielded_address.starts_with("zc")
                 || zcash_shielded_address.starts_with("u1")
                 || zcash_shielded_address.starts_with("ztestsapling")
-                || zcash_shielded_address.starts_with("utest1"),
+                || zcash_shielded_address.starts_with("utest"),
             "Invalid Zcash shielded address"
         );
 
@@ -138,6 +157,16 @@ impl WZecToken {
 
         // Increment nonce
         self.withdrawal_nonce += 1;
+
+        // Store withdrawal request on-chain for relayer to process
+        let withdrawal_request = WithdrawalRequest {
+            burner: burner.clone(),
+            amount,
+            zcash_shielded_address: zcash_shielded_address.clone(),
+            nonce: self.withdrawal_nonce,
+            timestamp: env::block_timestamp(),
+        };
+        self.withdrawal_requests.insert(&self.withdrawal_nonce, &withdrawal_request);
 
         // Emit event for bridge relayer
         let event = BurnForZcashEvent {
@@ -176,6 +205,35 @@ impl WZecToken {
         log!("Ownership transferred to {}", new_owner);
     }
 
+    /// Migrate contract state (owner only)
+    /// Initializes withdrawal_requests field for existing contracts
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        #[derive(BorshDeserialize)]
+        #[borsh(crate = "near_sdk::borsh")]
+        struct OldState {
+            token: FungibleToken,
+            metadata: LazyOption<FungibleTokenMetadata>,
+            bridge_controller: AccountId,
+            total_locked_zec: u128,
+            withdrawal_nonce: u64,
+            owner: AccountId,
+        }
+
+        let old_state: OldState = env::state_read().expect("Failed to read old state");
+
+        Self {
+            token: old_state.token,
+            metadata: old_state.metadata,
+            bridge_controller: old_state.bridge_controller,
+            total_locked_zec: old_state.total_locked_zec,
+            withdrawal_nonce: old_state.withdrawal_nonce,
+            owner: old_state.owner,
+            withdrawal_requests: LookupMap::new(StorageKey::WithdrawalRequests),
+        }
+    }
+
     // ==================== VIEW METHODS ====================
 
     /// Get bridge controller
@@ -196,6 +254,12 @@ impl WZecToken {
     /// Get owner
     pub fn get_owner(&self) -> AccountId {
         self.owner.clone()
+    }
+
+    /// Get withdrawal request by nonce
+    #[result_serializer(borsh)]
+    pub fn get_withdrawal_request(&self, nonce: u64) -> Option<WithdrawalRequest> {
+        self.withdrawal_requests.get(&nonce)
     }
 
     // ==================== INTERNAL ====================

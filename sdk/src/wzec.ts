@@ -4,6 +4,15 @@
 
 import { Contract, Account, transactions } from 'near-api-js';
 
+/** Withdrawal request stored on-chain */
+export interface WithdrawalRequest {
+  burner: string;
+  amount: string;
+  zcash_shielded_address: string;
+  nonce: number;
+  timestamp: string;
+}
+
 /** Contract methods interface */
 interface WZecContractMethods {
   // Change methods
@@ -39,6 +48,7 @@ interface WZecContractMethods {
   get_total_locked_zec: () => Promise<string>;
   get_withdrawal_nonce: () => Promise<number>;
   get_owner: () => Promise<string>;
+  get_withdrawal_request: (args: { nonce: number }) => Promise<WithdrawalRequest | null>;
 }
 
 /**
@@ -60,6 +70,7 @@ export class WZecToken {
         'get_total_locked_zec',
         'get_withdrawal_nonce',
         'get_owner',
+        'get_withdrawal_request',
       ],
       changeMethods: [
         'mint',
@@ -122,16 +133,25 @@ export class WZecToken {
     zcashShieldedAddress: string
   ): Promise<void> {
     // Validate Zcash address format
+    // Mainnet: zs (Sapling), zc (Sprout), u1 (Unified)
+    // Testnet: ztestsapling, utest (Unified/Sapling)
     if (
       !zcashShieldedAddress.startsWith('zs') &&
-      !zcashShieldedAddress.startsWith('zc')
+      !zcashShieldedAddress.startsWith('zc') &&
+      !zcashShieldedAddress.startsWith('u1') &&
+      !zcashShieldedAddress.startsWith('ztestsapling') &&
+      !zcashShieldedAddress.startsWith('utest')
     ) {
       throw new Error('Invalid Zcash shielded address');
     }
 
-    await this.contract.burn_for_zcash({
-      amount,
-      zcash_shielded_address: zcashShieldedAddress,
+    await this.account.functionCall({
+      contractId: this.contract.contractId,
+      methodName: 'burn_for_zcash',
+      args: {
+        amount,
+        zcash_shielded_address: zcashShieldedAddress,
+      },
     });
   }
 
@@ -237,5 +257,94 @@ export class WZecToken {
    */
   async getOwner(): Promise<string> {
     return this.contract.get_owner();
+  }
+
+  /**
+   * Get withdrawal request by nonce
+   * Note: This method returns Borsh-serialized data from the contract
+   */
+  async getWithdrawalRequest(nonce: number): Promise<WithdrawalRequest | null> {
+    try {
+      // Call the view method directly to get raw result
+      const result: any = await this.account.connection.provider.query({
+        request_type: 'call_function',
+        account_id: this.contract.contractId,
+        method_name: 'get_withdrawal_request',
+        args_base64: Buffer.from(JSON.stringify({ nonce })).toString('base64'),
+        finality: 'final',
+      });
+
+      // If result is empty or first byte is 0 (None variant), return null
+      if (!result.result || result.result.length === 0 || result.result[0] === 0) {
+        return null;
+      }
+
+      // Borsh encodes Option<T> as: 1 byte (0=None, 1=Some) + T data
+      // Skip the first byte (which is 1 for Some) and manually parse the struct
+      const data = Buffer.from(result.result).slice(1);
+
+      // Manually parse Borsh-encoded WithdrawalRequest
+      // Borsh encodes strings as: u32 length + UTF-8 bytes
+      // Borsh encodes u64 as: 8 bytes little-endian
+      let offset = 0;
+
+      // Helper to safely read string
+      const readString = (): string => {
+        if (offset + 4 > data.length) {
+          throw new Error(`Cannot read string length at offset ${offset}, buffer size: ${data.length}`);
+        }
+        const len = data.readUInt32LE(offset);
+        offset += 4;
+        if (offset + len > data.length) {
+          throw new Error(`Cannot read string of length ${len} at offset ${offset}, buffer size: ${data.length}`);
+        }
+        const str = data.toString('utf-8', offset, offset + len);
+        offset += len;
+        return str;
+      };
+
+      // Parse burner (AccountId - string)
+      const burner = readString();
+
+      // Parse amount (U128 - serialized as u128, 16 bytes little-endian)
+      if (offset + 16 > data.length) {
+        throw new Error(`Cannot read amount at offset ${offset}, buffer size: ${data.length}`);
+      }
+      // Read as BigInt from 16 bytes (u128)
+      const amountLow = data.readBigUInt64LE(offset);
+      const amountHigh = data.readBigUInt64LE(offset + 8);
+      // Combine into full u128 value (for amounts < 2^64, high is 0)
+      const amount = (amountHigh === BigInt(0))
+        ? amountLow.toString()
+        : (amountHigh * (BigInt(1) << BigInt(64)) + amountLow).toString();
+      offset += 16;
+
+      // Parse zcash_shielded_address (string)
+      const zcash_shielded_address = readString();
+
+      // Parse nonce (u64)
+      if (offset + 8 > data.length) {
+        throw new Error(`Cannot read nonce at offset ${offset}, buffer size: ${data.length}`);
+      }
+      const requestNonce = Number(data.readBigUInt64LE(offset));
+      offset += 8;
+
+      // Parse timestamp (u64)
+      if (offset + 8 > data.length) {
+        throw new Error(`Cannot read timestamp at offset ${offset}, buffer size: ${data.length}`);
+      }
+      const timestamp = data.readBigUInt64LE(offset).toString();
+
+      return {
+        burner,
+        amount,
+        zcash_shielded_address,
+        nonce: requestNonce,
+        timestamp,
+      };
+    } catch (error: any) {
+      console.error('Error fetching withdrawal request:', error.message);
+      return null;
+    }
   }
 }
