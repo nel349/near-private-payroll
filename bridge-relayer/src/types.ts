@@ -61,13 +61,22 @@ export interface BlockchainInfo {
 /** Bridge Relayer Types */
 
 export interface RelayerConfig {
-  // Zcash configuration
+  // Zcash configuration (Zallet for deposits)
   zcash: {
     rpcHost: string;
     rpcPort: number;
     rpcUser: string;
     rpcPassword: string;
     custodyAccountUuid?: string; // Optional - will use first account if not set
+  };
+
+  // Zcashd configuration (for withdrawals) - optional
+  zcashd?: {
+    rpcHost: string;
+    rpcPort: number;
+    rpcUser: string;
+    rpcPassword: string;
+    enabled: boolean; // Whether to use zcashd for withdrawals
   };
 
   // NEAR configuration
@@ -80,11 +89,13 @@ export interface RelayerConfig {
 
   // Monitoring configuration
   pollInterval: number; // milliseconds
+  withdrawalPollInterval?: number; // milliseconds (default: same as pollInterval)
 }
 
 export interface RelayerState {
   lastProcessedBlock: number;
   processedTxids: string[];
+  processedWithdrawalNonces: number[]; // Track processed withdrawal nonces
   pendingWithdrawals: PendingWithdrawal[];
 }
 
@@ -104,4 +115,12 @@ export interface DepositEvent {
   companyId?: string;
   receiverId: string; // NEAR account
   confirmations: number;
+}
+
+export interface WithdrawalEvent {
+  burner: string; // NEAR account
+  amount: string; // wZEC amount (8 decimals)
+  zcash_shielded_address: string;
+  nonce: number;
+  nearTxHash: string; // NEAR tx that emitted the event
 }

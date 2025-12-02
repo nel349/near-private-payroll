@@ -27,7 +27,24 @@ export function loadConfig(): RelayerConfig {
       intentsAdapter: process.env.INTENTS_ADAPTER || '',
     },
     pollInterval: parseInt(process.env.POLL_INTERVAL || '30000'),
+    withdrawalPollInterval: parseInt(process.env.WITHDRAWAL_POLL_INTERVAL || process.env.POLL_INTERVAL || '30000'),
   };
+
+  // Optional zcashd configuration (for withdrawals)
+  const zcashdEnabled = process.env.ZCASHD_ENABLED === 'true';
+  if (zcashdEnabled) {
+    config.zcashd = {
+      rpcHost: process.env.ZCASHD_RPC_HOST || '127.0.0.1',
+      rpcPort: parseInt(process.env.ZCASHD_RPC_PORT || '8233'),
+      rpcUser: process.env.ZCASHD_RPC_USER || 'zcashuser',
+      rpcPassword: process.env.ZCASHD_RPC_PASSWORD || '',
+      enabled: true,
+    };
+
+    if (!config.zcashd.rpcPassword) {
+      throw new Error('ZCASHD_RPC_PASSWORD is required when ZCASHD_ENABLED=true');
+    }
+  }
 
   // Validate required fields
   if (!config.zcash.rpcPassword) {

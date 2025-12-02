@@ -12,6 +12,7 @@ export class StateService {
   private state: RelayerState = {
     lastProcessedBlock: 0,
     processedTxids: [],
+    processedWithdrawalNonces: [],
     pendingWithdrawals: [],
   };
 
@@ -82,5 +83,29 @@ export class StateService {
    */
   getProcessedTxids(): string[] {
     return this.state.processedTxids;
+  }
+
+  /**
+   * Mark withdrawal nonce as processed
+   */
+  markWithdrawalProcessed(nonce: number): void {
+    if (!this.state.processedWithdrawalNonces.includes(nonce)) {
+      this.state.processedWithdrawalNonces.push(nonce);
+      this.save();
+    }
+  }
+
+  /**
+   * Get processed withdrawal nonces
+   */
+  getProcessedWithdrawalNonces(): number[] {
+    return this.state.processedWithdrawalNonces;
+  }
+
+  /**
+   * Check if withdrawal nonce was already processed
+   */
+  isWithdrawalProcessed(nonce: number): boolean {
+    return this.state.processedWithdrawalNonces.includes(nonce);
   }
 }

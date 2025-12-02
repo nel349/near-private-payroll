@@ -4,7 +4,7 @@
 
 import { connect, keyStores, Account, utils } from 'near-api-js';
 import { WZecToken } from '@near-private-payroll/sdk';
-import { DepositEvent } from '../types';
+import { DepositEvent, WithdrawalEvent } from '../types';
 
 export class NearService {
   private account!: Account;
@@ -87,11 +87,57 @@ export class NearService {
   }
 
   /**
-   * Query pending withdrawals from intents adapter
-   * TODO: Implement once withdrawal monitoring is added
+   * Monitor for new burn events (withdrawals)
+   * Query recent transactions and look for EVENT_BURN_FOR_ZCASH logs
    */
-  async getPendingWithdrawals(): Promise<any[]> {
-    // Placeholder - will be implemented when withdrawal processing is added
-    return [];
+  async getNewWithdrawals(processedNonces: number[]): Promise<WithdrawalEvent[]> {
+    try {
+      // Query contract logs for burn events
+      // For production, use indexer or streaming API
+      // For now, query recent transactions
+      const result = await this.account.connection.provider.query({
+        request_type: 'view_state',
+        finality: 'final',
+        account_id: this.wzecContractId,
+        prefix_base64: '',
+      });
+
+      // In production, you'd use NEAR indexer or streaming API
+      // For now, we'll poll using a simple approach
+      // The contract emits: log!("EVENT_BURN_FOR_ZCASH:{}", serde_json::to_string(&event))
+
+      // This is a simplified implementation
+      // TODO: Implement proper event monitoring using:
+      // 1. NEAR Lake indexer
+      // 2. WebSocket streaming API
+      // 3. Or transaction history queries
+
+      return [];
+    } catch (error: any) {
+      console.error('Error querying withdrawals:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get burn events from transaction outcomes
+   * Helper method to parse burn events from NEAR tx receipts
+   */
+  private parseBurnEvents(logs: string[]): WithdrawalEvent[] {
+    const events: WithdrawalEvent[] = [];
+
+    for (const log of logs) {
+      if (log.startsWith('EVENT_BURN_FOR_ZCASH:')) {
+        try {
+          const eventJson = log.substring('EVENT_BURN_FOR_ZCASH:'.length);
+          const event = JSON.parse(eventJson);
+          events.push(event);
+        } catch (error) {
+          console.error('Failed to parse burn event:', log, error);
+        }
+      }
+    }
+
+    return events;
   }
 }

@@ -12,7 +12,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "clean": "rm -rf dist",
-    "zcash-cli": "ts-node scripts/zcash-cli.ts"
+    "zcash-cli": "ts-node scripts/zcash-cli.ts",
+    "zcashd-cli": "ts-node scripts/zcashd-cli.ts"
   },
   "keywords": [
     "zcash",

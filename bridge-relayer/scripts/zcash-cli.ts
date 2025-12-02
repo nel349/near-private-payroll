@@ -3,7 +3,11 @@
  * Zcash CLI - Helper tool for Zallet RPC operations
  *
  * Usage:
- *   npm run zcash-cli <command> [args]
+ *   npm run zcash-cli [--wallet=<name>] <command> [args]
+ *
+ * Wallets:
+ *   --wallet=bridge   - Bridge custody wallet (port 28232, default)
+ *   --wallet=user     - User test wallet (port 28233)
  *
  * Commands:
  *   accounts          - List all accounts
@@ -15,20 +19,37 @@
 
 import axios, { AxiosInstance } from 'axios';
 
-const ZALLET_RPC_HOST = process.env.ZCASH_RPC_HOST || '127.0.0.1';
-const ZALLET_RPC_PORT = parseInt(process.env.ZCASH_RPC_PORT || '28232');
-const ZALLET_RPC_USER = process.env.ZCASH_RPC_USER || 'zcashrpc';
-const ZALLET_RPC_PASSWORD = process.env.ZCASH_RPC_PASSWORD || 'testpass123';
+// Wallet configurations
+const WALLETS = {
+  bridge: {
+    port: 28232,
+    user: 'zcashrpc',
+    password: 'testpass123',
+    name: 'Bridge Custody',
+  },
+  user: {
+    port: 28233,
+    user: 'userzcash',
+    password: 'userpass123',
+    name: 'User Test',
+  },
+};
+
+type WalletType = keyof typeof WALLETS;
 
 class ZcashCLI {
   private client: AxiosInstance;
+  private walletName: string;
 
-  constructor() {
+  constructor(wallet: WalletType = 'bridge') {
+    const config = WALLETS[wallet];
+    this.walletName = config.name;
+
     this.client = axios.create({
-      baseURL: `http://${ZALLET_RPC_HOST}:${ZALLET_RPC_PORT}`,
+      baseURL: `http://127.0.0.1:${config.port}`,
       auth: {
-        username: ZALLET_RPC_USER,
-        password: ZALLET_RPC_PASSWORD,
+        username: config.user,
+        password: config.password,
       },
       headers: {
         'content-type': 'text/plain;',
@@ -54,7 +75,7 @@ class ZcashCLI {
       if (error.code === 'ECONNREFUSED') {
         console.error('❌ Cannot connect to Zallet RPC');
         console.error('   Make sure Zallet is running and RPC is enabled');
-        console.error(`   Expected: http://${ZALLET_RPC_HOST}:${ZALLET_RPC_PORT}`);
+        console.error(`   Expected: ${this.client.defaults.baseURL}`);
         process.exit(1);
       }
       throw error;
@@ -62,7 +83,7 @@ class ZcashCLI {
   }
 
   async listAccounts(): Promise<void> {
-    console.log('📋 Listing Zallet accounts...\n');
+    console.log(`📋 Listing accounts for ${this.walletName} wallet...\n`);
 
     const accounts = await this.rpc<any[]>('z_listaccounts');
 
@@ -278,6 +299,100 @@ class ZcashCLI {
     console.log(`   Types: ${address.receiver_types.join(', ')}\n`);
   }
 
+  async send(toAddress: string, amount: string, memo?: string): Promise<void> {
+    console.log(`💸 Sending ${amount} ZEC to ${toAddress}...\n`);
+
+    // Get first account
+    const accounts = await this.rpc<any[]>('z_listaccounts');
+    if (accounts.length === 0) {
+      console.error('No accounts found. Create an account first.');
+      return;
+    }
+
+    const account = accounts[0];
+
+    // Get unspent outputs to find an address with balance (preferring Sapling over Orchard)
+    const unspent = await this.rpc<any[]>('z_listunspent', [0, 9999999]);
+
+    if (unspent.length === 0) {
+      console.error('No funds available. Fund the wallet first.');
+      return;
+    }
+
+    // Prefer Sapling addresses (Orchard doesn't work well in Zallet alpha)
+    let utxo = unspent.find((u: any) => u.pool === 'sapling');
+    if (!utxo) {
+      // Fall back to any available
+      utxo = unspent[0];
+    }
+
+    const fromAddress = utxo.address;
+    console.log(`From account: ${account.account_uuid}`);
+    console.log(`From address: ${fromAddress}`);
+    console.log(`Pool: ${utxo.pool}`);
+    console.log(`Available: ${utxo.value} ZEC\n`);
+
+    // Prepare the send operation
+    const recipients: any[] = [{
+      address: toAddress,
+      amount: parseFloat(amount),
+    }];
+
+    // Add memo if provided (format: company:<near_account_id>)
+    if (memo) {
+      const memoHex = Buffer.from(memo, 'utf8').toString('hex');
+      recipients[0].memo = memoHex;
+      console.log(`Memo: ${memo}`);
+      console.log(`Memo (hex): ${memoHex}\n`);
+    }
+
+    // Send using z_sendmany
+    // Note: fromAddress should be the shielded address, fee must be null (Zallet uses ZIP 317)
+    try {
+      const opid = await this.rpc<string>('z_sendmany', [
+        fromAddress,  // Use address, not account UUID
+        recipients,
+        1, // minconf
+        null // fee (must be null for Zallet)
+      ]);
+
+      console.log(`✅ Transaction submitted!`);
+      console.log(`   Operation ID: ${opid}`);
+      console.log(`\nTo check status:`);
+      console.log(`   npm run zcash-cli${this.walletName !== 'Bridge Custody' ? ' -- --wallet=user' : ''} operation-status ${opid}`);
+    } catch (error: any) {
+      if (error.response && error.response.data) {
+        console.error('\nDetailed error:', JSON.stringify(error.response.data, null, 2));
+      }
+      throw new Error(`Failed to send: ${error.message}`);
+    }
+  }
+
+  async getOperationStatus(opid: string): Promise<void> {
+    console.log(`🔍 Checking operation status...\n`);
+
+    const result = await this.rpc<any[]>('z_getoperationstatus', [[opid]]);
+
+    if (result.length === 0) {
+      console.log('Operation not found.');
+      return;
+    }
+
+    const op = result[0];
+    console.log(`Status: ${op.status}`);
+    console.log(`Method: ${op.method}`);
+
+    if (op.status === 'success' && op.result) {
+      console.log(`\n✅ Transaction successful!`);
+      console.log(`   TxID: ${op.result.txid}`);
+    } else if (op.status === 'failed') {
+      console.log(`\n❌ Transaction failed:`);
+      console.log(`   ${op.error?.message || 'Unknown error'}`);
+    } else if (op.status === 'executing') {
+      console.log(`\n⏳ Transaction is being processed...`);
+    }
+  }
+
   async run(command: string, args: string[]): Promise<void> {
     try {
       switch (command) {
@@ -298,6 +413,20 @@ class ZcashCLI {
           break;
         case 'create-account':
           await this.createAccount();
+          break;
+        case 'send':
+          if (args.length < 2) {
+            console.error('Usage: send <address> <amount> [memo]');
+            process.exit(1);
+          }
+          await this.send(args[0], args[1], args[2]);
+          break;
+        case 'operation-status':
+          if (args.length < 1) {
+            console.error('Usage: operation-status <operation_id>');
+            process.exit(1);
+          }
+          await this.getOperationStatus(args[0]);
           break;
         default:
           this.showUsage();
@@ -321,6 +450,8 @@ Commands:
   create-account            Create new account (generates first address too)
   generate-address [uuid]   Generate new address for account (default: first)
   balance [uuid]            Get balance for account (default: first account)
+  send <addr> <amt> [memo]  Send ZEC to address with optional memo
+  operation-status <opid>   Check status of async operation
   sync                      Check Zebra sync status
 
 Environment Variables:
@@ -332,26 +463,46 @@ Environment Variables:
   SEED_FINGERPRINT      Seed fingerprint for create-account (if multiple seeds)
 
 Examples:
+  # Bridge wallet (default)
   npm run zcash-cli accounts
-  npm run zcash-cli addresses
-  npm run zcash-cli create-account
-  npm run zcash-cli generate-address
   npm run zcash-cli balance
-  npm run zcash-cli sync
+
+  # User test wallet
+  npm run zcash-cli --wallet=user accounts
+  npm run zcash-cli --wallet=user create-account
+  npm run zcash-cli --wallet=user addresses
 
   # With specific account
   npm run zcash-cli addresses 15e53ffa-f6e2-4d81-9c8f-6ab2144cdcfa
-  npm run zcash-cli balance 15e53ffa-f6e2-4d81-9c8f-6ab2144cdcfa
+  npm run zcash-cli --wallet=user balance <uuid>
 
   # With specific seed
-  SEED_FINGERPRINT=zip32seedfp... npm run zcash-cli create-account
+  SEED_FINGERPRINT=zip32seedfp... npm run zcash-cli --wallet=user create-account
 `);
   }
 }
 
 // Main
-const cli = new ZcashCLI();
-const [command, ...args] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+
+// Parse --wallet flag
+let wallet: WalletType = 'bridge';
+let remainingArgs = argv;
+
+const walletFlagIndex = argv.findIndex(arg => arg.startsWith('--wallet='));
+if (walletFlagIndex !== -1) {
+  const walletArg = argv[walletFlagIndex].split('=')[1];
+  if (walletArg === 'user' || walletArg === 'bridge') {
+    wallet = walletArg as WalletType;
+  } else {
+    console.error(`Invalid wallet: ${walletArg}. Must be 'bridge' or 'user'`);
+    process.exit(1);
+  }
+  remainingArgs = [...argv.slice(0, walletFlagIndex), ...argv.slice(walletFlagIndex + 1)];
+}
+
+const cli = new ZcashCLI(wallet);
+const [command, ...args] = remainingArgs;
 
 if (!command) {
   cli['showUsage']();
