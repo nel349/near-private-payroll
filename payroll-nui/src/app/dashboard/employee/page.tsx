@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Wallet, History, FileCheck, Shield, ArrowLeft, Download } from 'lucide-react';
+import { Wallet, History, FileCheck, Shield, Download } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 export default function EmployeeDashboardPage() {
@@ -14,10 +14,6 @@ export default function EmployeeDashboardPage() {
     <div className="container mx-auto px-6 py-8">
       {/* Header */}
       <div className="mb-8">
-        <Button variant="outline" onClick={() => router.push('/select-role')} className="mb-4">
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back to Role Selection
-        </Button>
         <h1 className="text-4xl font-bold mb-2">Employee Dashboard</h1>
         <p className="text-muted-foreground">
           View your private income and generate zero-knowledge proofs

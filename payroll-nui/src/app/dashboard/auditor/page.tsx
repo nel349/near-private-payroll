@@ -3,36 +3,36 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Users, UserPlus, Wallet, Send } from 'lucide-react';
+import { ShieldCheck, FileCheck, DollarSign, Clock } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
-export default function CompanyDashboardPage() {
+export default function AuditorDashboardPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<'overview' | 'employees' | 'payments'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'requests' | 'history'>('overview');
 
   return (
     <div className="container mx-auto px-6 py-8">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-4xl font-bold mb-2">Company Dashboard</h1>
+        <h1 className="text-4xl font-bold mb-2">Auditor Dashboard</h1>
         <p className="text-muted-foreground">
-          Manage your employees and process payroll with zero-knowledge privacy
+          Review income proofs and provide attestations
         </p>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Total Employees
+              Pending Reviews
             </CardTitle>
-            <Users className="w-4 h-4 text-muted-foreground" />
+            <Clock className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">0</div>
             <p className="text-xs text-muted-foreground mt-1">
-              Active employees on payroll
+              Awaiting verification
             </p>
           </CardContent>
         </Card>
@@ -40,14 +40,14 @@ export default function CompanyDashboardPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Total Payments
+              Completed
             </CardTitle>
-            <Send className="w-4 h-4 text-muted-foreground" />
+            <FileCheck className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">0</div>
             <p className="text-xs text-muted-foreground mt-1">
-              Processed this month
+              Total verifications
             </p>
           </CardContent>
         </Card>
@@ -55,14 +55,29 @@ export default function CompanyDashboardPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Company Balance
+              Earnings
             </CardTitle>
-            <Wallet className="w-4 h-4 text-muted-foreground" />
+            <DollarSign className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0.00 wZEC</div>
+            <div className="text-2xl font-bold">0.00 NEAR</div>
             <p className="text-xs text-muted-foreground mt-1">
-              Available for payroll
+              Verification fees earned
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Status
+            </CardTitle>
+            <ShieldCheck className="w-4 h-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">Pending</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Application status
             </p>
           </CardContent>
         </Card>
@@ -81,24 +96,24 @@ export default function CompanyDashboardPage() {
           Overview
         </button>
         <button
-          onClick={() => setActiveTab('employees')}
+          onClick={() => setActiveTab('requests')}
           className={`px-4 py-2 font-medium transition-colors ${
-            activeTab === 'employees'
+            activeTab === 'requests'
               ? 'text-primary border-b-2 border-primary'
               : 'text-muted-foreground hover:text-foreground'
           }`}
         >
-          Employees
+          Verification Requests
         </button>
         <button
-          onClick={() => setActiveTab('payments')}
+          onClick={() => setActiveTab('history')}
           className={`px-4 py-2 font-medium transition-colors ${
-            activeTab === 'payments'
+            activeTab === 'history'
               ? 'text-primary border-b-2 border-primary'
               : 'text-muted-foreground hover:text-foreground'
           }`}
         >
-          Process Payment
+          History
         </button>
       </div>
 
@@ -107,10 +122,29 @@ export default function CompanyDashboardPage() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Welcome to Company Dashboard</CardTitle>
+              <CardTitle>Application Status</CardTitle>
               <CardDescription>
-                Get started by adding employees and funding your payroll balance
+                Your auditor application is pending review
               </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="p-4 rounded-lg border border-yellow-500/20 bg-yellow-500/10">
+                <div className="flex items-start gap-3">
+                  <Clock className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold text-yellow-500 mb-1">Pending Review</p>
+                    <p className="text-sm text-muted-foreground">
+                      Your application is being reviewed by the company administrator. You will be notified once approved.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>How Verification Works</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-4">
@@ -119,9 +153,9 @@ export default function CompanyDashboardPage() {
                     <span className="text-primary font-bold">1</span>
                   </div>
                   <div>
-                    <h4 className="font-semibold mb-1">Fund Your Balance</h4>
+                    <h4 className="font-semibold mb-1">Receive Verification Request</h4>
                     <p className="text-sm text-muted-foreground">
-                      Transfer wZEC tokens to your company balance to pay employees
+                      Employees request income proof verification for loans, rentals, or credit applications
                     </p>
                   </div>
                 </div>
@@ -130,9 +164,9 @@ export default function CompanyDashboardPage() {
                     <span className="text-primary font-bold">2</span>
                   </div>
                   <div>
-                    <h4 className="font-semibold mb-1">Add Employees</h4>
+                    <h4 className="font-semibold mb-1">Review ZK Proof</h4>
                     <p className="text-sm text-muted-foreground">
-                      Register employees with encrypted salary commitments
+                      Verify the zero-knowledge proof without seeing exact salary amounts
                     </p>
                   </div>
                 </div>
@@ -141,70 +175,53 @@ export default function CompanyDashboardPage() {
                     <span className="text-primary font-bold">3</span>
                   </div>
                   <div>
-                    <h4 className="font-semibold mb-1">Process Payroll</h4>
+                    <h4 className="font-semibold mb-1">Provide Attestation</h4>
                     <p className="text-sm text-muted-foreground">
-                      Pay employees with zero-knowledge proofs that verify amounts match commitments
+                      Sign the proof with your professional credentials and earn verification fees
                     </p>
                   </div>
                 </div>
               </div>
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Quick Actions</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Button className="w-full justify-start" onClick={() => setActiveTab('employees')}>
-                <UserPlus className="w-4 h-4 mr-2" />
-                Add New Employee
-              </Button>
-              <Button className="w-full justify-start" onClick={() => setActiveTab('payments')}>
-                <Send className="w-4 h-4 mr-2" />
-                Process Payment
-              </Button>
-            </CardContent>
-          </Card>
         </div>
       )}
 
-      {activeTab === 'employees' && (
+      {activeTab === 'requests' && (
         <div>
           <Card>
             <CardHeader>
-              <CardTitle>Employee Management</CardTitle>
+              <CardTitle>Pending Verification Requests</CardTitle>
               <CardDescription>
-                Add and manage employees on your private payroll
+                Income proofs awaiting your review
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="text-center py-12 text-muted-foreground">
-                <Users className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p className="mb-4">No employees added yet</p>
-                <Button>
-                  <UserPlus className="w-4 h-4 mr-2" />
-                  Add First Employee
-                </Button>
+                <FileCheck className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                <p className="mb-2">No verification requests</p>
+                <p className="text-sm">
+                  Pending requests will appear here once your application is approved
+                </p>
               </div>
             </CardContent>
           </Card>
         </div>
       )}
 
-      {activeTab === 'payments' && (
+      {activeTab === 'history' && (
         <div>
           <Card>
             <CardHeader>
-              <CardTitle>Process Payroll</CardTitle>
+              <CardTitle>Verification History</CardTitle>
               <CardDescription>
-                Pay your employees with zero-knowledge proof verification
+                Your completed verifications
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="text-center py-12 text-muted-foreground">
-                <Send className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>Add employees first to process payments</p>
+                <ShieldCheck className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                <p>No verifications completed yet</p>
               </div>
             </CardContent>
           </Card>

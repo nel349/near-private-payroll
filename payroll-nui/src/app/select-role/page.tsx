@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Users, Send, FileCheck, ArrowRight } from 'lucide-react';
+import { Users, Send, ArrowRight, ShieldCheck } from 'lucide-react';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -18,7 +18,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Action Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl">
         {/* Company Dashboard */}
         <Card className="hover:shadow-accent hover:-translate-y-1 transition-all duration-300 cursor-pointer">
           <CardHeader>
@@ -45,8 +45,8 @@ export default function DashboardPage() {
                 View payment history
               </li>
             </ul>
-            <Button className="w-full mt-4" onClick={() => router.push('/dashboard/company')}>
-              Open Company Dashboard
+            <Button className="w-full mt-4" onClick={() => router.push('/onboarding/company')}>
+              Setup Company
               <ArrowRight className="w-4 h-4 ml-2" />
             </Button>
           </CardContent>
@@ -78,49 +78,46 @@ export default function DashboardPage() {
                 Withdraw funds
               </li>
             </ul>
-            <Button className="w-full mt-4" onClick={() => router.push('/dashboard/employee')}>
-              Open Employee Dashboard
+            <Button className="w-full mt-4" onClick={() => router.push('/onboarding/employee')}>
+              Join as Employee
               <ArrowRight className="w-4 h-4 ml-2" />
             </Button>
           </CardContent>
         </Card>
 
-        {/* Zcash Bridge */}
-        <Card className="hover:shadow-accent hover:-translate-y-1 transition-all duration-300 cursor-pointer md:col-span-2">
+        {/* Auditor */}
+        <Card className="hover:shadow-accent hover:-translate-y-1 transition-all duration-300 cursor-pointer">
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center mb-4">
-                  <FileCheck className="w-6 h-6 text-primary" />
-                </div>
-                <CardTitle>Zcash Bridge</CardTitle>
-                <CardDescription>
-                  Bridge wZEC tokens between NEAR and Zcash for enhanced privacy
-                </CardDescription>
-              </div>
+            <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center mb-4">
+              <ShieldCheck className="w-6 h-6 text-primary" />
             </div>
+            <CardTitle>Auditor / Verifier</CardTitle>
+            <CardDescription>
+              Verify income proofs and provide attestations
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid md:grid-cols-2 gap-6">
-              <div>
-                <h4 className="font-semibold mb-2">NEAR → Zcash</h4>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Withdraw wZEC from NEAR to Zcash shielded address for maximum privacy
-                </p>
-              </div>
-              <div>
-                <h4 className="font-semibold mb-2">Zcash → NEAR</h4>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Deposit ZEC from Zcash to NEAR as wZEC tokens
-                </p>
-              </div>
-            </div>
-            <Button className="w-full" onClick={() => router.push('/dashboard/bridge')}>
-              Open Bridge
+            <ul className="space-y-2 text-sm text-muted-foreground">
+              <li className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+                Review income proofs
+              </li>
+              <li className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+                Provide attestations
+              </li>
+              <li className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+                Earn verification fees
+              </li>
+            </ul>
+            <Button className="w-full mt-4" onClick={() => router.push('/onboarding/auditor')}>
+              Apply as Auditor
               <ArrowRight className="w-4 h-4 ml-2" />
             </Button>
           </CardContent>
         </Card>
+
       </div>
     </div>
   );
