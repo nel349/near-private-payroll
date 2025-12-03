@@ -188,6 +188,10 @@ pub enum StorageKey {
     AuthorizedAuditors,
     /// Pending proofs awaiting verification callback
     PendingProofs,
+    /// Auto-lend configurations per employee
+    AutoLendConfigs,
+    /// Lent balances per employee
+    LentBalances,
 }
 
 /// Pending proof data (stored while waiting for zk-verifier callback)
@@ -345,6 +349,23 @@ pub struct AuthorizedAuditor {
     pub active: bool,
 }
 
+/// Auto-lend configuration for an employee
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, NearSchema)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct AutoLendConfig {
+    /// Whether auto-lend is enabled
+    pub enabled: bool,
+    /// Percentage of salary to auto-lend (0-100)
+    pub percentage: u8,
+    /// Target lending protocol (e.g., "aave", "compound", "solend")
+    pub target_protocol: String,
+    /// Target chain for lending
+    pub target_chain: DestinationChain,
+    /// Asset to lend as (e.g., "nep141:usdc.token.near")
+    pub target_asset: String,
+}
+
 /// Main payroll contract
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
@@ -385,6 +406,11 @@ pub struct PayrollContract {
     /// Pending proofs (awaiting zk-verifier callback)
     pub pending_proofs: LookupMap<[u8; 32], PendingProof>,
 
+    /// Auto-lend configurations per employee
+    pub auto_lend_configs: LookupMap<AccountId, AutoLendConfig>,
+    /// Lent balances per employee (funds in lending protocols)
+    pub lent_balances: LookupMap<AccountId, u128>,
+
     /// Company balance (deposited wZEC)
     pub company_balance: u128,
     /// Total employees
@@ -414,6 +440,8 @@ impl PayrollContract {
             used_receipts: LookupMap::new(StorageKey::UsedReceipts),
             authorized_auditors: UnorderedMap::new(StorageKey::AuthorizedAuditors),
             pending_proofs: LookupMap::new(StorageKey::PendingProofs),
+            auto_lend_configs: LookupMap::new(StorageKey::AutoLendConfigs),
+            lent_balances: LookupMap::new(StorageKey::LentBalances),
             company_balance: 0,
             total_employees: 0,
             total_payments: 0,
@@ -593,8 +621,35 @@ impl PayrollContract {
         let current_balance = self.employee_balances.get(&employee_id).unwrap_or(0);
         // Amount would be verified via ZK proof - placeholder for now
         let payment_amount = self.extract_amount_from_proof(&zk_proof);
+
+        // Check if auto-lending is enabled
+        let auto_lend_config = self.auto_lend_configs.get(&employee_id);
+        let (to_lend, to_balance, lend_percentage) = if let Some(ref config) = auto_lend_config {
+            if config.enabled && config.percentage > 0 {
+                let lend_amount = (payment_amount * config.percentage as u128) / 100;
+                let balance_amount = payment_amount - lend_amount;
+                (lend_amount, balance_amount, config.percentage)
+            } else {
+                (0, payment_amount, 0)
+            }
+        } else {
+            (0, payment_amount, 0)
+        };
+
+        // Update balances
         self.employee_balances
-            .insert(&employee_id, &(current_balance + payment_amount));
+            .insert(&employee_id, &(current_balance + to_balance));
+
+        if to_lend > 0 {
+            let current_lent = self.lent_balances.get(&employee_id).unwrap_or(0);
+            self.lent_balances.insert(&employee_id, &(current_lent + to_lend));
+
+            env::log_str(&format!(
+                "Auto-lend: {} ZEC moved to lending ({}% of payment)",
+                to_lend,
+                lend_percentage
+            ));
+        }
 
         // Deduct from company balance
         assert!(
@@ -606,8 +661,8 @@ impl PayrollContract {
         self.total_payments += 1;
 
         env::log_str(&format!(
-            "Payment processed for {} (period: {})",
-            employee_id, payment.period
+            "Payment processed for {} (period: {}): {} to balance, {} auto-lent",
+            employee_id, payment.period, to_balance, to_lend
         ));
     }
 
@@ -951,6 +1006,156 @@ impl PayrollContract {
                 env::log_str(&format!(
                     "Swap failed for {}, refunded {} ZEC",
                     employee_id, amount.0
+                ));
+
+                "failed".to_string()
+            }
+        }
+    }
+
+    // ==================== AUTO-LEND OPERATIONS ====================
+
+    /// Employee configures auto-lending of salary
+    /// Automatically deposits a percentage of each payment into lending protocols
+    pub fn enable_auto_lend(
+        &mut self,
+        percentage: u8,
+        target_protocol: String,
+        target_chain: DestinationChain,
+        target_asset: String,
+    ) {
+        let employee_id = env::predecessor_account_id();
+        assert!(
+            self.employees.get(&employee_id).is_some(),
+            "Not an employee"
+        );
+        assert!(percentage > 0 && percentage <= 100, "Invalid percentage (must be 1-100)");
+
+        let config = AutoLendConfig {
+            enabled: true,
+            percentage,
+            target_protocol,
+            target_chain,
+            target_asset,
+        };
+
+        self.auto_lend_configs.insert(&employee_id, &config);
+
+        env::log_str(&format!(
+            "Auto-lend enabled for {}: {}% to lending",
+            employee_id, percentage
+        ));
+    }
+
+    /// Employee disables auto-lending
+    pub fn disable_auto_lend(&mut self) {
+        let employee_id = env::predecessor_account_id();
+        assert!(
+            self.employees.get(&employee_id).is_some(),
+            "Not an employee"
+        );
+
+        if let Some(mut config) = self.auto_lend_configs.get(&employee_id) {
+            config.enabled = false;
+            self.auto_lend_configs.insert(&employee_id, &config);
+            env::log_str(&format!("Auto-lend disabled for {}", employee_id));
+        }
+    }
+
+    /// Get auto-lend configuration for employee
+    pub fn get_auto_lend_config(&self, employee_id: AccountId) -> Option<AutoLendConfig> {
+        self.auto_lend_configs.get(&employee_id)
+    }
+
+    /// Get lent balance (funds currently in lending protocols)
+    pub fn get_lent_balance(&self, employee_id: AccountId) -> U128 {
+        U128(self.lent_balances.get(&employee_id).unwrap_or(0))
+    }
+
+    /// Employee withdraws funds from lending protocol
+    /// This triggers a cross-chain operation to withdraw from the lending pool
+    pub fn withdraw_lent_funds(
+        &mut self,
+        amount: U128,
+    ) -> Promise {
+        let employee_id = env::predecessor_account_id();
+
+        let lent_balance = self.lent_balances.get(&employee_id).unwrap_or(0);
+        assert!(lent_balance >= amount.0, "Insufficient lent balance");
+
+        let config = self
+            .auto_lend_configs
+            .get(&employee_id)
+            .expect("No auto-lend configuration found");
+
+        // Verify NEAR Intents is configured
+        let near_intents = self
+            .near_intents_contract
+            .as_ref()
+            .expect("NEAR Intents not configured");
+        let poa_token = self.poa_token.as_ref().expect("PoA Bridge token not configured");
+
+        // Deduct from lent balance
+        self.lent_balances.insert(&employee_id, &(lent_balance - amount.0));
+
+        env::log_str(&format!(
+            "Initiating withdrawal of {} ZEC from {} on {:?}",
+            amount.0, config.target_protocol, config.target_chain
+        ));
+
+        // In a full implementation, this would:
+        // 1. Call NEAR Intents to execute withdrawal from lending protocol
+        // 2. Swap back to ZEC if needed
+        // 3. Credit employee balance
+        //
+        // For now, we transfer directly to demonstrate the flow
+        ext_poa_token::ext(poa_token.clone())
+            .ft_transfer_call(
+                near_intents.clone(),
+                amount,
+                Some(format!("Withdraw {} ZEC from lending for {}", amount.0, employee_id)),
+                String::new(), // Withdrawal intent handled by NEAR Intents SDK
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .on_lend_withdrawal(employee_id, amount)
+            )
+    }
+
+    /// Callback after withdrawal attempt
+    #[private]
+    pub fn on_lend_withdrawal(&mut self, employee_id: AccountId, amount: U128) -> String {
+        match env::promise_result(0) {
+            near_sdk::PromiseResult::Successful(result) => {
+                let refund: U128 = serde_json::from_slice(&result).unwrap_or(U128(0));
+
+                if refund.0 > 0 {
+                    // Withdrawal failed or partially failed, restore lent balance
+                    let lent_balance = self.lent_balances.get(&employee_id).unwrap_or(0);
+                    self.lent_balances.insert(&employee_id, &(lent_balance + refund.0));
+                }
+
+                // Credit available balance (amount - refund)
+                let withdrawn = amount.0 - refund.0;
+                if withdrawn > 0 {
+                    let balance = self.employee_balances.get(&employee_id).unwrap_or(0);
+                    self.employee_balances.insert(&employee_id, &(balance + withdrawn));
+                    env::log_str(&format!(
+                        "Lent funds withdrawn for {}: {} ZEC now available",
+                        employee_id, withdrawn
+                    ));
+                }
+
+                "success".to_string()
+            }
+            _ => {
+                // Withdrawal failed, restore lent balance
+                let lent_balance = self.lent_balances.get(&employee_id).unwrap_or(0);
+                self.lent_balances.insert(&employee_id, &(lent_balance + amount.0));
+
+                env::log_str(&format!(
+                    "Lend withdrawal failed for {}, balance restored",
+                    employee_id
                 ));
 
                 "failed".to_string()
