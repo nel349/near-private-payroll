@@ -46,12 +46,12 @@ export default function Home() {
 
             {/* CTA Buttons */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center pt-4">
-              <Button size="lg" onClick={signIn}>
-                Connect Wallet
+              <Button size="lg" onClick={() => window.location.href = '/select-role'}>
+                Open App
                 <ArrowRight className="w-5 h-5" />
               </Button>
-              <Button size="lg" variant="outline" onClick={() => window.location.href = '/hello-near'}>
-                View Demo
+              <Button size="lg" variant="outline" onClick={() => window.location.href = '#how-it-works'}>
+                Learn More
               </Button>
             </div>
 

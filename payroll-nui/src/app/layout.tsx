@@ -3,7 +3,6 @@
 import '@/app/globals.css';
 import '@near-wallet-selector/modal-ui/styles.css';
 
-import { Navigation } from '@/components/navigation';
 import { HelloNearContract, NetworkId } from '@/config';
 import { WalletSelectorProvider } from '@near-wallet-selector/react-hook';
 
@@ -71,7 +70,6 @@ export default function RootLayout({ children }: RootLayoutProps) {
     <html lang="en">
       <body>
         <WalletSelectorProvider config={walletSelectorConfig}>
-          <Navigation />
           {children}
         </WalletSelectorProvider>
       </body>
