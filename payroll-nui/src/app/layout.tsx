@@ -12,7 +12,7 @@ import { ReactNode } from 'react';
 // Wallet setups
 import { setupMeteorWallet } from "@near-wallet-selector/meteor-wallet";
 import { setupMeteorWalletApp } from "@near-wallet-selector/meteor-wallet-app";
-import { setupEthereumWallets } from "@near-wallet-selector/ethereum-wallets";
+// import { setupEthereumWallets } from "@near-wallet-selector/ethereum-wallets"; // Disabled: version conflict
 import { setupHotWallet } from "@near-wallet-selector/hot-wallet";
 import { setupLedger } from "@near-wallet-selector/ledger";
 import { setupSender } from "@near-wallet-selector/sender";
@@ -27,7 +27,7 @@ import { setupCoin98Wallet } from "@near-wallet-selector/coin98-wallet";
 import { setupIntearWallet } from "@near-wallet-selector/intear-wallet";
 
 // Ethereum adapters
-import { wagmiAdapter, web3Modal } from '@/wallets/web3modal';
+// import { wagmiAdapter, web3Modal } from '@/wallets/web3modal'; // Disabled: version conflict
 
 // Types
 import type { WalletModuleFactory, Network, WalletSelectorParams } from "@near-wallet-selector/core";
@@ -35,7 +35,7 @@ import type { WalletModuleFactory, Network, WalletSelectorParams } from "@near-w
 const walletSelectorConfig: WalletSelectorParams = {
   network: NetworkId as unknown as Network,
   modules: [
-    setupEthereumWallets({ wagmiConfig: wagmiAdapter.wagmiConfig, web3Modal }),
+    // setupEthereumWallets({ wagmiConfig: wagmiAdapter.wagmiConfig, web3Modal }), // Disabled: version conflict
     setupMeteorWallet(),
     setupMeteorWalletApp({ contractId: HelloNearContract }),
     setupHotWallet(),
@@ -46,7 +46,7 @@ const walletSelectorConfig: WalletSelectorParams = {
     setupMathWallet(),
     setupBitgetWallet(),
     setupRamperWallet(),
-    setupUnityWallet({ 
+    setupUnityWallet({
         projectId: "your-project-id",
         metadata: {
           name: "Hello NEAR",
@@ -57,7 +57,7 @@ const walletSelectorConfig: WalletSelectorParams = {
         }),
     setupOKXWallet(),
     setupCoin98Wallet(),
-    setupIntearWallet(),  
+    setupIntearWallet(),
     ] as WalletModuleFactory[]
     };
 
