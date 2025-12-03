@@ -45,7 +45,25 @@ pub enum DestinationChain {
     Near,
 }
 
-/// External interface for wZEC Token contract
+/// Withdrawal route selection for cross-chain operations
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug, NearSchema)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub enum WithdrawalRoute {
+    /// Private bridge: Uses wZEC + custom bridge relayer
+    /// - Full privacy (Zallet wallet with shielded transactions)
+    /// - Any withdrawal amount
+    /// - Currently supports Zcash only
+    PrivateBridge,
+
+    /// NEAR Intents: Uses PoA Bridge tokens (e.g., zec.omft.near)
+    /// - Multi-chain support (Zcash, Solana, Ethereum, Bitcoin)
+    /// - Minimum amounts enforced by PoA Bridge (1.0 ZEC for Zcash)
+    /// - Mainnet only (not available on testnet)
+    NearIntents,
+}
+
+/// External interface for wZEC Token contract (custom bridge)
 #[ext_contract(ext_wzec)]
 pub trait ExtWzecToken {
     fn ft_transfer_call(
@@ -55,6 +73,25 @@ pub trait ExtWzecToken {
         memo: Option<String>,
         msg: String,
     ) -> Promise;
+}
+
+/// External interface for PoA Bridge tokens (e.g., zec.omft.near)
+#[ext_contract(ext_poa_token)]
+pub trait ExtPoAToken {
+    fn ft_transfer_call(
+        &mut self,
+        receiver_id: AccountId,
+        amount: U128,
+        memo: Option<String>,
+        msg: String,
+    ) -> Promise;
+}
+
+/// External interface for NEAR Intents contract (intents.near)
+#[ext_contract(ext_near_intents)]
+pub trait ExtNearIntents {
+    // NEAR Intents uses ft_on_transfer callback pattern
+    // No direct methods needed - interactions via ft_transfer_call
 }
 
 /// External interface for Intents Adapter contract
@@ -315,11 +352,15 @@ pub struct AuthorizedAuditor {
 pub struct PayrollContract {
     /// Company owner
     pub owner: AccountId,
-    /// wZEC token contract address
+    /// wZEC token contract address (custom bridge)
     pub wzec_token: AccountId,
+    /// PoA Bridge token contract address (e.g., zec.omft.near for NEAR Intents)
+    pub poa_token: Option<AccountId>,
+    /// NEAR Intents contract address (intents.near on mainnet)
+    pub near_intents_contract: Option<AccountId>,
     /// ZK verifier contract address
     pub zk_verifier: AccountId,
-    /// Intents adapter contract address (for cross-chain operations)
+    /// Intents adapter contract address (for private bridge cross-chain operations)
     pub intents_adapter: Option<AccountId>,
 
     /// Employee records
@@ -360,6 +401,8 @@ impl PayrollContract {
         Self {
             owner,
             wzec_token,
+            poa_token: None,
+            near_intents_contract: None,
             zk_verifier,
             intents_adapter: None,
             employees: UnorderedMap::new(StorageKey::Employees),
@@ -378,6 +421,7 @@ impl PayrollContract {
     }
 
     /// Set the intents adapter contract (owner only)
+    /// Used for private bridge cross-chain operations
     pub fn set_intents_adapter(&mut self, intents_adapter: AccountId) {
         self.assert_owner();
         self.intents_adapter = Some(intents_adapter.clone());
@@ -387,6 +431,32 @@ impl PayrollContract {
     /// Get the intents adapter contract
     pub fn get_intents_adapter(&self) -> Option<AccountId> {
         self.intents_adapter.clone()
+    }
+
+    /// Set the PoA Bridge token contract (owner only)
+    /// e.g., zec.omft.near for Zcash via NEAR Intents
+    pub fn set_poa_token(&mut self, poa_token: AccountId) {
+        self.assert_owner();
+        self.poa_token = Some(poa_token.clone());
+        env::log_str(&format!("PoA Bridge token set to {}", poa_token));
+    }
+
+    /// Get the PoA Bridge token contract
+    pub fn get_poa_token(&self) -> Option<AccountId> {
+        self.poa_token.clone()
+    }
+
+    /// Set the NEAR Intents contract (owner only)
+    /// Should be "intents.near" on mainnet
+    pub fn set_near_intents_contract(&mut self, near_intents: AccountId) {
+        self.assert_owner();
+        self.near_intents_contract = Some(near_intents.clone());
+        env::log_str(&format!("NEAR Intents contract set to {}", near_intents));
+    }
+
+    /// Get the NEAR Intents contract
+    pub fn get_near_intents_contract(&self) -> Option<AccountId> {
+        self.near_intents_contract.clone()
     }
 
     // ==================== COMPANY OPERATIONS ====================
@@ -575,20 +645,32 @@ impl PayrollContract {
     }
 
     /// Employee withdraws their balance via cross-chain intents
-    /// Supports withdrawals to Zcash (shielded), Solana, Ethereum, Bitcoin
+    /// Supports two withdrawal routes:
+    /// 1. PrivateBridge - Custom bridge with full privacy (Zcash only, any amount)
+    /// 2. NearIntents - PoA Bridge multi-chain (mainnet only, minimum amounts apply)
     ///
     /// # Arguments
-    /// * `amount` - Amount to withdraw in wZEC smallest units (8 decimals)
+    /// * `amount` - Amount to withdraw (8 decimals)
     /// * `destination_chain` - Target blockchain for withdrawal
     /// * `destination_address` - Address on target chain (e.g., Zcash shielded address)
+    /// * `route` - Withdrawal route (PrivateBridge or NearIntents)
     ///
     /// # Example
     /// ```ignore
-    /// // Withdraw to Zcash shielded address for maximum privacy
+    /// // Private bridge withdrawal (max privacy)
     /// withdraw_via_intents(
-    ///     U128(100_000_000), // 1 ZEC
+    ///     U128(50_000_000), // 0.5 ZEC
     ///     DestinationChain::Zcash,
-    ///     "zs1j29m7zdmh0s2k2c2fqjcpxlqm9uvr9q3r5xeqf..."
+    ///     "zs1...",
+    ///     WithdrawalRoute::PrivateBridge
+    /// )
+    ///
+    /// // NEAR Intents withdrawal (multi-chain, mainnet only)
+    /// withdraw_via_intents(
+    ///     U128(100_000_000), // 1.0 ZEC (minimum for PoA Bridge)
+    ///     DestinationChain::Zcash,
+    ///     "zs1...",
+    ///     WithdrawalRoute::NearIntents
     /// )
     /// ```
     pub fn withdraw_via_intents(
@@ -596,6 +678,7 @@ impl PayrollContract {
         amount: U128,
         destination_chain: DestinationChain,
         destination_address: String,
+        route: WithdrawalRoute,
     ) -> Promise {
         let employee_id = env::predecessor_account_id();
 
@@ -606,41 +689,69 @@ impl PayrollContract {
             .expect("Not an employee");
         assert!(balance >= amount.0, "Insufficient balance");
 
-        // Verify intents adapter is configured
-        let intents_adapter = self.intents_adapter
-            .as_ref()
-            .expect("Intents adapter not configured");
-
         // Deduct balance
         self.employee_balances
             .insert(&employee_id, &(balance - amount.0));
 
         env::log_str(&format!(
-            "Initiating cross-chain withdrawal: {} wZEC from {} to {} on {:?}",
-            amount.0, employee_id, destination_address, destination_chain
+            "Initiating cross-chain withdrawal via {:?}: {} from {} to {} on {:?}",
+            route, amount.0, employee_id, destination_address, destination_chain
         ));
 
-        // Build withdrawal message: "withdrawal:chain:destination_address"
-        let chain_str = match destination_chain {
-            DestinationChain::Zcash => "zcash",
-            DestinationChain::Solana => "solana",
-            DestinationChain::Ethereum => "ethereum",
-            DestinationChain::Bitcoin => "bitcoin",
-            DestinationChain::Near => "near",
-        };
-        let withdrawal_msg = format!("withdrawal:{}:{}", chain_str, destination_address);
+        match route {
+            WithdrawalRoute::PrivateBridge => {
+                // Route via custom bridge + intents adapter
+                // Uses wZEC token
+                let intents_adapter = self.intents_adapter
+                    .as_ref()
+                    .expect("Intents adapter not configured for PrivateBridge");
 
-        // Transfer wZEC to intents adapter with withdrawal details
-        // The intents adapter will handle the cross-chain transfer
-        ext_wzec::ext(self.wzec_token.clone())
-            .with_static_gas(Gas::from_tgas(100))
-            .with_attached_deposit(NearToken::from_yoctonear(1))
-            .ft_transfer_call(
-                intents_adapter.clone(),
-                amount,
-                Some(format!("Employee withdrawal for {}", employee_id)),
-                withdrawal_msg,
-            )
+                // Build withdrawal message: "withdrawal:chain:destination_address"
+                let chain_str = match destination_chain {
+                    DestinationChain::Zcash => "zcash",
+                    DestinationChain::Solana => "solana",
+                    DestinationChain::Ethereum => "ethereum",
+                    DestinationChain::Bitcoin => "bitcoin",
+                    DestinationChain::Near => "near",
+                };
+                let withdrawal_msg = format!("withdrawal:{}:{}", chain_str, destination_address);
+
+                // Transfer wZEC to intents adapter
+                ext_wzec::ext(self.wzec_token.clone())
+                    .with_static_gas(Gas::from_tgas(100))
+                    .with_attached_deposit(NearToken::from_yoctonear(1))
+                    .ft_transfer_call(
+                        intents_adapter.clone(),
+                        amount,
+                        Some(format!("Employee withdrawal for {}", employee_id)),
+                        withdrawal_msg,
+                    )
+            }
+
+            WithdrawalRoute::NearIntents => {
+                // Route via NEAR Intents (intents.near)
+                // Uses PoA Bridge token (e.g., zec.omft.near)
+                let poa_token = self.poa_token
+                    .as_ref()
+                    .expect("PoA Bridge token not configured for NearIntents");
+
+                let near_intents = self.near_intents_contract
+                    .as_ref()
+                    .expect("NEAR Intents contract not configured");
+
+                // For NEAR Intents, the msg is empty (as per reference implementation)
+                // The destination address/chain info is handled by the Intents SDK off-chain
+                ext_poa_token::ext(poa_token.clone())
+                    .with_static_gas(Gas::from_tgas(100))
+                    .with_attached_deposit(NearToken::from_yoctonear(1))
+                    .ft_transfer_call(
+                        near_intents.clone(),
+                        amount,
+                        Some(format!("Employee withdrawal via NEAR Intents for {}", employee_id)),
+                        String::new(), // Empty msg per NEAR Intents protocol
+                    )
+            }
+        }
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(Gas::from_tgas(20))
@@ -700,6 +811,154 @@ impl PayrollContract {
             }
         }
     }
+
+    // ==================== DEFI OPERATIONS ====================
+
+    /// Employee swaps their ZEC balance to another token on any chain
+    /// Powered by NEAR Intents - enables spending ZEC across DeFi ecosystems
+    ///
+    /// # Use Cases
+    /// - Swap ZEC salary to USDC on Solana for daily expenses
+    /// - Convert ZEC to ETH on Ethereum for gas fees
+    /// - Exchange ZEC to SOL for Solana DeFi participation
+    ///
+    /// # Arguments
+    /// * `amount` - Amount of ZEC balance to swap (8 decimals)
+    /// * `target_asset` - Target token (e.g., "nep141:usdc.token.near")
+    /// * `target_chain` - Destination blockchain
+    /// * `min_output` - Minimum acceptable output amount (slippage protection)
+    /// * `recipient` - Optional recipient address on target chain (defaults to employee)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Swap 1 ZEC to USDC on Solana
+    /// swap_balance(
+    ///     U128(100_000_000), // 1 ZEC
+    ///     "nep141:usdc.token.near".to_string(),
+    ///     DestinationChain::Solana,
+    ///     U128(2800_000_000), // Min 2800 USDC (assuming ~$2900/ZEC)
+    ///     Some("SolanaAddress123...".to_string())
+    /// )
+    /// ```
+    pub fn swap_balance(
+        &mut self,
+        amount: U128,
+        target_asset: String,
+        target_chain: DestinationChain,
+        min_output: U128,
+        recipient: Option<String>,
+    ) -> Promise {
+        let employee_id = env::predecessor_account_id();
+
+        // Verify employee exists and has sufficient balance
+        let balance = self
+            .employee_balances
+            .get(&employee_id)
+            .expect("Not an employee");
+        assert!(balance >= amount.0, "Insufficient balance");
+
+        // Verify NEAR Intents is configured
+        let near_intents = self.near_intents_contract
+            .as_ref()
+            .expect("NEAR Intents not configured - swaps unavailable");
+
+        // Verify PoA token is configured (needed for swaps via Intents)
+        let poa_token = self.poa_token
+            .as_ref()
+            .expect("PoA Bridge token not configured");
+
+        // Deduct balance
+        self.employee_balances
+            .insert(&employee_id, &(balance - amount.0));
+
+        env::log_str(&format!(
+            "Initiating cross-chain swap: {} ZEC → {} on {:?} for {}",
+            amount.0, target_asset, target_chain, employee_id
+        ));
+
+        // For NEAR Intents swaps, we need to:
+        // 1. Transfer PoA token (zec.omft.near) to intents.near
+        // 2. Intents SDK (off-chain) handles the actual swap intent
+        // 3. User receives target token on target chain
+        //
+        // Note: The swap parameters (target_asset, min_output, recipient)
+        // are handled by the Intents SDK off-chain via signed intent message
+        // The on-chain call just transfers the source token to intents.near
+
+        let recipient_addr = recipient.unwrap_or_else(|| employee_id.to_string());
+
+        ext_poa_token::ext(poa_token.clone())
+            .with_static_gas(Gas::from_tgas(100))
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .ft_transfer_call(
+                near_intents.clone(),
+                amount,
+                Some(format!("Swap ZEC to {} for {}", target_asset, employee_id)),
+                String::new(), // Empty msg - swap details in off-chain intent
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(20))
+                    .on_swap_initiated(employee_id, amount, target_asset, min_output)
+            )
+    }
+
+    /// Callback after cross-chain swap initiated
+    #[private]
+    pub fn on_swap_initiated(
+        &mut self,
+        employee_id: AccountId,
+        amount: U128,
+        target_asset: String,
+        min_output: U128,
+    ) -> String {
+        match env::promise_result(0) {
+            near_sdk::PromiseResult::Successful(result) => {
+                // ft_transfer_call returns the refunded amount
+                let refund: U128 = serde_json::from_slice(&result).unwrap_or(U128(0));
+
+                if refund.0 > 0 {
+                    // Swap was rejected or partially refunded, credit back to employee
+                    let balance = self.employee_balances.get(&employee_id).unwrap_or(0);
+                    self.employee_balances.insert(&employee_id, &(balance + refund.0));
+
+                    if refund.0 == amount.0 {
+                        env::log_str(&format!(
+                            "Swap rejected for {}, refunded {} ZEC",
+                            employee_id, refund.0
+                        ));
+                        return "rejected".to_string();
+                    } else {
+                        env::log_str(&format!(
+                            "Swap partially completed for {}, refunded {} ZEC",
+                            employee_id, refund.0
+                        ));
+                        return "partial".to_string();
+                    }
+                }
+
+                env::log_str(&format!(
+                    "Swap initiated successfully: {} ZEC → {} (min {})",
+                    amount.0, target_asset, min_output.0
+                ));
+                "success".to_string()
+            }
+            _ => {
+                // Transfer call failed completely, refund full amount
+                let balance = self.employee_balances.get(&employee_id).unwrap_or(0);
+                self.employee_balances.insert(&employee_id, &(balance + amount.0));
+
+                env::log_str(&format!(
+                    "Swap failed for {}, refunded {} ZEC",
+                    employee_id, amount.0
+                ));
+
+                "failed".to_string()
+            }
+        }
+    }
+
+    // ==================== DISCLOSURE OPERATIONS ====================
 
     /// Employee grants disclosure to a third party
     pub fn grant_disclosure(

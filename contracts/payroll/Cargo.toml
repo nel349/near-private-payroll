@@ -19,3 +19,5 @@ hex = { workspace = true }
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }
 tokio = { workspace = true }
+near-workspaces = { version = "0.21", features = ["unstable"] }
+serde_json = { workspace = true }
