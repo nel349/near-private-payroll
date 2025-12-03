@@ -77,7 +77,7 @@ export async function deployPayrollContract(
     transactions: [
       {
         receiverId: subaccountId,
-        actions,
+        actions: actions as any, // Type cast needed due to near-api-js vs wallet-selector type mismatch
       },
     ],
   });

@@ -27,7 +27,19 @@
 export { PrivatePayroll } from './payroll';
 export { WZecToken } from './wzec';
 export { ZkVerifier, ProofType } from './verifier';
-export { Commitment, generateCommitment, verifyCommitment } from './crypto';
+export {
+  Commitment,
+  generateCommitment,
+  verifyCommitment,
+  generateBlinding,
+  generateSalaryCommitment,
+  generateBalanceCommitment,
+  encryptWithPublicKey,
+  decryptWithPrivateKey,
+  toHex,
+  fromHex,
+  leBytesToBigint,
+} from './crypto';
 export {
   IntentsAdapterSDK,
   buildDepositMessage,

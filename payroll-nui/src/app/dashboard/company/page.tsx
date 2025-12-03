@@ -3,11 +3,13 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Users, UserPlus, Wallet, Send } from 'lucide-react';
+import { Users, UserPlus, Wallet, Send, Calendar } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useWalletSelector } from '@near-wallet-selector/react-hook';
 import { CONFIG } from '@/config/contracts';
 import { FundAccountDialog } from '@/components/fund-account-dialog';
+import { AddEmployeeDialog } from '@/components/add-employee-dialog';
+import { RecurringPaymentDialog } from '@/components/recurring-payment-dialog';
 
 export default function CompanyDashboardPage() {
   const router = useRouter();
@@ -19,7 +21,11 @@ export default function CompanyDashboardPage() {
   const [balance, setBalance] = useState<string>('0.00');
   const [employeeCount, setEmployeeCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Dialog states
   const [showFundDialog, setShowFundDialog] = useState(false);
+  const [showAddEmployeeDialog, setShowAddEmployeeDialog] = useState(false);
+  const [showRecurringDialog, setShowRecurringDialog] = useState(false);
 
   // Load company data and fetch balance
   useEffect(() => {
@@ -57,7 +63,8 @@ export default function CompanyDashboardPage() {
 
         // Convert from smallest unit (8 decimals for ZEC)
         // Show up to 8 decimals but strip trailing zeros
-        const balanceNum = parseInt(balanceResult || '0') / 100_000_000;
+        const balanceStr = typeof balanceResult === 'string' ? balanceResult : String(balanceResult || '0');
+        const balanceNum = parseInt(balanceStr) / 100_000_000;
         const balanceInZEC = balanceNum.toFixed(8).replace(/\.?0+$/, '');
         setBalance(balanceInZEC);
 
@@ -98,7 +105,8 @@ export default function CompanyDashboardPage() {
           method: 'ft_balance_of',
           args: { account_id: companyData.contractAddress },
         });
-        const balanceNum = parseInt(balanceResult || '0') / 100_000_000;
+        const balanceStr = typeof balanceResult === 'string' ? balanceResult : String(balanceResult || '0');
+        const balanceNum = parseInt(balanceStr) / 100_000_000;
         const balanceInZEC = balanceNum.toFixed(8).replace(/\.?0+$/, '');
         setBalance(balanceInZEC);
       } catch (error) {
@@ -270,9 +278,13 @@ export default function CompanyDashboardPage() {
                 <Wallet className="w-4 h-4 mr-2" />
                 Fund Account
               </Button>
-              <Button className="w-full justify-start" onClick={() => setActiveTab('employees')}>
+              <Button className="w-full justify-start" onClick={() => setShowAddEmployeeDialog(true)}>
                 <UserPlus className="w-4 h-4 mr-2" />
-                Add New Employee
+                Add Employee
+              </Button>
+              <Button className="w-full justify-start" onClick={() => setShowRecurringDialog(true)}>
+                <Calendar className="w-4 h-4 mr-2" />
+                Setup Recurring Payment
               </Button>
               <Button className="w-full justify-start" onClick={() => setActiveTab('payments')}>
                 <Send className="w-4 h-4 mr-2" />
@@ -331,6 +343,29 @@ export default function CompanyDashboardPage() {
           companyId={companyData.contractAddress}
           onSuccess={handleFundSuccess}
           onClose={() => setShowFundDialog(false)}
+        />
+      )}
+
+      {/* Add Employee Dialog */}
+      {showAddEmployeeDialog && companyData?.contractAddress && (
+        <AddEmployeeDialog
+          companyId={companyData.contractAddress}
+          onSuccess={(employee) => {
+            console.log('[Dashboard] Employee added:', employee);
+            // Optionally refresh employee list
+          }}
+          onClose={() => setShowAddEmployeeDialog(false)}
+        />
+      )}
+
+      {/* Recurring Payment Dialog */}
+      {showRecurringDialog && companyData?.contractAddress && (
+        <RecurringPaymentDialog
+          companyId={companyData.contractAddress}
+          onSuccess={(config) => {
+            console.log('[Dashboard] Recurring payment configured:', config);
+          }}
+          onClose={() => setShowRecurringDialog(false)}
         />
       )}
     </div>
