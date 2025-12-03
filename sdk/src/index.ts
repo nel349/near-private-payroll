@@ -34,6 +34,7 @@ export {
   generateBlinding,
   generateSalaryCommitment,
   generateBalanceCommitment,
+  generateRSAKeypair,
   encryptWithPublicKey,
   decryptWithPrivateKey,
   toHex,

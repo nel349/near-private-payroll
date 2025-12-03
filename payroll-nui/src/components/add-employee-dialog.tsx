@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, UserPlus, X } from 'lucide-react';
 import { generateBlinding, generateSalaryCommitment, encryptWithPublicKey } from '@near-private-payroll/sdk';
-import { useAddEmployee } from '@/lib/hooks/use-payroll-queries';
+import { useAddEmployee, useCompanyPublicKey } from '@/lib/hooks/use-payroll-queries';
 
 interface AddEmployeeDialogProps {
   companyId: string;
@@ -15,6 +15,7 @@ interface AddEmployeeDialogProps {
 
 export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployeeDialogProps) {
   const addEmployeeMutation = useAddEmployee();
+  const { data: companyPublicKey, isLoading: isLoadingPublicKey } = useCompanyPublicKey(companyId);
 
   const [employeeName, setEmployeeName] = useState('');
   const [employeeWallet, setEmployeeWallet] = useState('');
@@ -36,16 +37,26 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
         throw new Error('Valid base salary is required');
       }
 
+      if (!companyPublicKey) {
+        throw new Error('Company public key not loaded yet');
+      }
+
       console.log('[AddEmployee] Adding employee:', employeeName);
 
-      // Generate encryption key pair (placeholder for development)
-      const publicKey = generateBlinding(); // Using random bytes as placeholder public key
+      // Generate employee's RSA keypair for encrypting their salary
+      // In production, this would be the employee's actual public key
+      const { generateRSAKeypair } = await import('@near-private-payroll/sdk');
+      const employeeKeypair = await generateRSAKeypair();
 
-      // Encrypt employee data
+      // Encrypt name with COMPANY's public key (so company can decrypt for UI)
       const nameBytes = new TextEncoder().encode(employeeName.trim());
+      const encryptedNameBytes = await encryptWithPublicKey(nameBytes, companyPublicKey);
+      const encrypted_name = Array.from(encryptedNameBytes);
+
+      // Encrypt salary with EMPLOYEE's public key (so only employee can decrypt)
       const salaryBytes = new TextEncoder().encode(baseSalary.trim());
-      const encrypted_name = Array.from(encryptWithPublicKey(nameBytes, publicKey));
-      const encrypted_salary = Array.from(encryptWithPublicKey(salaryBytes, publicKey));
+      const encryptedSalaryBytes = await encryptWithPublicKey(salaryBytes, employeeKeypair.publicKey);
+      const encrypted_salary = Array.from(encryptedSalaryBytes);
 
       // Generate salary commitment
       const salaryValue = BigInt(baseSalary.trim());
@@ -53,7 +64,8 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
       const commitment = generateSalaryCommitment(salaryValue, blinding);
       const salary_commitment = Array.from(commitment.value);
 
-      console.log('[AddEmployee] Encrypted data generated, calling contract...');
+      console.log('[AddEmployee] Name encrypted with company key, salary with employee key');
+      console.log('[AddEmployee] Calling contract...');
 
       // Add employee using TanStack Query mutation
       await addEmployeeMutation.mutateAsync({
@@ -62,7 +74,7 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
         encrypted_name,
         encrypted_salary,
         salary_commitment,
-        public_key: Array.from(publicKey),
+        employee_public_key: Array.from(employeeKeypair.publicKey),
       });
 
       console.log('[AddEmployee] Employee added successfully');
@@ -209,10 +221,10 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
             <Button
               className="flex-1"
               onClick={handleAddEmployee}
-              disabled={addEmployeeMutation.isPending || success || !employeeName || !employeeWallet || !baseSalary}
+              disabled={addEmployeeMutation.isPending || success || !employeeName || !employeeWallet || !baseSalary || isLoadingPublicKey}
             >
-              {addEmployeeMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {addEmployeeMutation.isPending ? 'Adding...' : success ? 'Added!' : 'Add Employee'}
+              {(addEmployeeMutation.isPending || isLoadingPublicKey) && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {addEmployeeMutation.isPending ? 'Adding...' : isLoadingPublicKey ? 'Loading...' : success ? 'Added!' : 'Add Employee'}
             </Button>
           </div>
         </CardContent>

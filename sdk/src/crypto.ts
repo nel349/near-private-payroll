@@ -160,38 +160,167 @@ export function fromHex(hex: string): Uint8Array {
 }
 
 /**
- * Encrypt data with a public key (placeholder - implement with actual encryption)
+ * Generate an RSA keypair for encryption
+ * Returns keys in exportable format (SPKI for public, PKCS8 for private)
  */
-export function encryptWithPublicKey(
-  data: Uint8Array,
-  publicKey: Uint8Array
-): Uint8Array {
-  // TODO: Implement proper encryption (e.g., NaCl box or ECIES)
-  // For now, just XOR with a key derived from public key (NOT SECURE - development only)
-  console.warn('Using insecure placeholder encryption - implement real encryption for production');
-  const key = sha256(publicKey);
-  const result = new Uint8Array(data.length);
-  for (let i = 0; i < data.length; i++) {
-    result[i] = data[i] ^ key[i % key.length];
+export async function generateRSAKeypair(): Promise<{
+  publicKey: Uint8Array;
+  privateKey: Uint8Array;
+}> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Web Crypto API not available');
   }
-  return result;
+
+  // Generate RSA-OAEP keypair
+  const keypair = await crypto.subtle.generateKey(
+    {
+      name: 'RSA-OAEP',
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: 'SHA-256',
+    },
+    true, // extractable
+    ['encrypt', 'decrypt']
+  );
+
+  // Export keys to standard formats
+  const publicKeySpki = await crypto.subtle.exportKey('spki', keypair.publicKey);
+  const privateKeyPkcs8 = await crypto.subtle.exportKey('pkcs8', keypair.privateKey);
+
+  return {
+    publicKey: new Uint8Array(publicKeySpki),
+    privateKey: new Uint8Array(privateKeyPkcs8),
+  };
 }
 
 /**
- * Decrypt data with a private key (placeholder - implement with actual decryption)
+ * Import a public key from SPKI format
  */
-export function decryptWithPrivateKey(
+async function importPublicKey(publicKeyBytes: Uint8Array): Promise<CryptoKey> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Web Crypto API not available');
+  }
+
+  const buffer = publicKeyBytes.buffer.slice(
+    publicKeyBytes.byteOffset,
+    publicKeyBytes.byteOffset + publicKeyBytes.byteLength
+  ) as ArrayBuffer;
+
+  return await crypto.subtle.importKey(
+    'spki',
+    buffer,
+    {
+      name: 'RSA-OAEP',
+      hash: 'SHA-256',
+    },
+    false,
+    ['encrypt']
+  );
+}
+
+/**
+ * Import a private key from PKCS8 format
+ */
+async function importPrivateKey(privateKeyBytes: Uint8Array): Promise<CryptoKey> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Web Crypto API not available');
+  }
+
+  const buffer = privateKeyBytes.buffer.slice(
+    privateKeyBytes.byteOffset,
+    privateKeyBytes.byteOffset + privateKeyBytes.byteLength
+  ) as ArrayBuffer;
+
+  return await crypto.subtle.importKey(
+    'pkcs8',
+    buffer,
+    {
+      name: 'RSA-OAEP',
+      hash: 'SHA-256',
+    },
+    false,
+    ['decrypt']
+  );
+}
+
+/**
+ * Encrypt data with a public key using RSA-OAEP
+ *
+ * @param data - Data to encrypt
+ * @param publicKey - Public key in SPKI format (Uint8Array)
+ * @returns Encrypted data
+ */
+export async function encryptWithPublicKey(
+  data: Uint8Array,
+  publicKey: Uint8Array
+): Promise<Uint8Array> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Web Crypto API not available');
+  }
+
+  try {
+    // Import the public key
+    const cryptoKey = await importPublicKey(publicKey);
+
+    const dataBuffer = data.buffer.slice(
+      data.byteOffset,
+      data.byteOffset + data.byteLength
+    ) as ArrayBuffer;
+
+    // Encrypt with RSA-OAEP
+    const encrypted = await crypto.subtle.encrypt(
+      {
+        name: 'RSA-OAEP',
+      },
+      cryptoKey,
+      dataBuffer
+    );
+
+    return new Uint8Array(encrypted);
+  } catch (error) {
+    console.error('[encryptWithPublicKey] Encryption failed:', error);
+    throw new Error(`Failed to encrypt data: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Decrypt data with a private key using RSA-OAEP
+ *
+ * @param encryptedData - Encrypted data
+ * @param privateKey - Private key in PKCS8 format (Uint8Array)
+ * @param publicKey - Not used in RSA-OAEP (kept for API compatibility)
+ * @returns Decrypted data
+ */
+export async function decryptWithPrivateKey(
   encryptedData: Uint8Array,
   privateKey: Uint8Array,
-  publicKey: Uint8Array
-): Uint8Array {
-  // TODO: Implement proper decryption
-  // For now, just XOR with key (same as encrypt for this placeholder)
-  console.warn('Using insecure placeholder decryption - implement real decryption for production');
-  const key = sha256(publicKey);
-  const result = new Uint8Array(encryptedData.length);
-  for (let i = 0; i < encryptedData.length; i++) {
-    result[i] = encryptedData[i] ^ key[i % key.length];
+  publicKey?: Uint8Array
+): Promise<Uint8Array> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Web Crypto API not available');
   }
-  return result;
+
+  try {
+    // Import the private key
+    const cryptoKey = await importPrivateKey(privateKey);
+
+    const encryptedBuffer = encryptedData.buffer.slice(
+      encryptedData.byteOffset,
+      encryptedData.byteOffset + encryptedData.byteLength
+    ) as ArrayBuffer;
+
+    // Decrypt with RSA-OAEP
+    const decrypted = await crypto.subtle.decrypt(
+      {
+        name: 'RSA-OAEP',
+      },
+      cryptoKey,
+      encryptedBuffer
+    );
+
+    return new Uint8Array(decrypted);
+  } catch (error) {
+    console.error('[decryptWithPrivateKey] Decryption failed:', error);
+    throw new Error(`Failed to decrypt data: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 }

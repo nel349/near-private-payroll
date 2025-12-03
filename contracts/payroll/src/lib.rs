@@ -236,16 +236,16 @@ pub enum EmploymentStatus {
 pub struct Employee {
     /// Employee's NEAR account
     pub account_id: AccountId,
-    /// Encrypted name (only employee can decrypt)
+    /// Encrypted name (company can decrypt)
     pub encrypted_name: Vec<u8>,
-    /// Encrypted salary amount (for local decryption)
+    /// Encrypted salary amount (employee can decrypt)
     pub encrypted_salary: Vec<u8>,
     /// Employment status
     pub status: EmploymentStatus,
     /// Start timestamp (nanoseconds)
     pub start_date: u64,
-    /// Public key for encryption (employee's key)
-    pub public_key: Vec<u8>,
+    /// Employee's public key for encryption
+    pub employee_public_key: Vec<u8>,
 }
 
 /// Encrypted payment record
@@ -383,6 +383,8 @@ pub struct PayrollContract {
     pub zk_verifier: AccountId,
     /// Intents adapter contract address (for private bridge cross-chain operations)
     pub intents_adapter: Option<AccountId>,
+    /// Company's public key for encrypting employee names (company can decrypt locally)
+    pub company_public_key: Vec<u8>,
 
     /// Employee records
     pub employees: UnorderedMap<AccountId, Employee>,
@@ -423,7 +425,7 @@ pub struct PayrollContract {
 impl PayrollContract {
     /// Initialize the contract
     #[init]
-    pub fn new(owner: AccountId, wzec_token: AccountId, zk_verifier: AccountId) -> Self {
+    pub fn new(owner: AccountId, wzec_token: AccountId, zk_verifier: AccountId, company_public_key: Vec<u8>) -> Self {
         Self {
             owner,
             wzec_token,
@@ -431,6 +433,7 @@ impl PayrollContract {
             near_intents_contract: None,
             zk_verifier,
             intents_adapter: None,
+            company_public_key,
             employees: UnorderedMap::new(StorageKey::Employees),
             salary_commitments: LookupMap::new(StorageKey::SalaryCommitments),
             payment_history: LookupMap::new(StorageKey::PaymentHistory),
@@ -534,7 +537,7 @@ impl PayrollContract {
         encrypted_name: Vec<u8>,
         encrypted_salary: Vec<u8>,
         salary_commitment: [u8; 32],
-        public_key: Vec<u8>,
+        employee_public_key: Vec<u8>,
     ) {
         self.assert_owner();
         assert!(
@@ -548,7 +551,7 @@ impl PayrollContract {
             encrypted_salary,
             status: EmploymentStatus::Active,
             start_date: env::block_timestamp(),
-            public_key,
+            employee_public_key,
         };
 
         self.employees.insert(&employee_id, &employee);
@@ -1672,6 +1675,25 @@ impl PayrollContract {
             self.total_payments,
             U128(self.company_balance),
         )
+    }
+
+    /// List all employees (for company to process payments)
+    /// Returns (employee_id, encrypted_name, status)
+    /// Company can decrypt the name locally with their private key
+    pub fn list_employees(&self, from_index: u64, limit: u64) -> Vec<(AccountId, Vec<u8>, EmploymentStatus)> {
+        self.employees
+            .iter()
+            .skip(from_index as usize)
+            .take(limit as usize)
+            .map(|(employee_id, employee)| {
+                (employee_id, employee.encrypted_name.clone(), employee.status)
+            })
+            .collect()
+    }
+
+    /// Get company's public key (for encrypting employee names)
+    pub fn get_company_public_key(&self) -> Vec<u8> {
+        self.company_public_key.clone()
     }
 
     /// Get all income proofs for an employee (if caller is authorized)

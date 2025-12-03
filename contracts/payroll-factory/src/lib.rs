@@ -18,6 +18,7 @@ pub struct PayrollInitArgs {
     pub owner: AccountId,
     pub wzec_token: AccountId,
     pub zk_verifier: AccountId,
+    pub company_public_key: Vec<u8>,
 }
 
 #[near(contract_state)]
@@ -50,11 +51,12 @@ impl PayrollFactory {
     ///
     /// # Arguments
     /// * `company_name` - Name used to generate subaccount (e.g., "acme-corp")
+    /// * `company_public_key` - Public key for encrypting employee data
     ///
     /// # Returns
     /// Promise that resolves to the new contract address
     #[payable]
-    pub fn create_company(&mut self, company_name: String) -> Promise {
+    pub fn create_company(&mut self, company_name: String, company_public_key: Vec<u8>) -> Promise {
 
         let attached_deposit = env::attached_deposit();
         require!(
@@ -99,6 +101,7 @@ impl PayrollFactory {
             owner: caller.clone(),
             wzec_token: self.wzec_token.clone(),
             zk_verifier: self.zk_verifier.clone(),
+            company_public_key,
         };
 
         // Create subaccount, deploy contract, and initialize

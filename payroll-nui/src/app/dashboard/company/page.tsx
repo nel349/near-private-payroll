@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 import { FundAccountDialog } from '@/components/fund-account-dialog';
 import { AddEmployeeDialog } from '@/components/add-employee-dialog';
 import { RecurringPaymentDialog } from '@/components/recurring-payment-dialog';
+import { PayEmployeeDialog } from '@/components/pay-employee-dialog';
 import { useCompanyDashboard } from '@/lib/hooks/use-payroll-queries';
 
 export default function CompanyDashboardPage() {
@@ -29,6 +30,7 @@ export default function CompanyDashboardPage() {
   const [showFundDialog, setShowFundDialog] = useState(false);
   const [showAddEmployeeDialog, setShowAddEmployeeDialog] = useState(false);
   const [showRecurringDialog, setShowRecurringDialog] = useState(false);
+  const [showPayEmployeeDialog, setShowPayEmployeeDialog] = useState(false);
 
   // Handlers - TanStack Query will auto-refresh the data
   const handleFundSuccess = (amount: number, txid: string) => {
@@ -224,7 +226,7 @@ export default function CompanyDashboardPage() {
                 <Calendar className="w-4 h-4 mr-2" />
                 Setup Recurring Payment
               </Button>
-              <Button className="w-full justify-start" onClick={() => setActiveTab('payments')}>
+              <Button className="w-full justify-start" onClick={() => setShowPayEmployeeDialog(true)}>
                 <Send className="w-4 h-4 mr-2" />
                 Process Payment
               </Button>
@@ -301,6 +303,18 @@ export default function CompanyDashboardPage() {
             console.log('[Dashboard] Recurring payment configured:', config);
           }}
           onClose={() => setShowRecurringDialog(false)}
+        />
+      )}
+
+      {/* Pay Employee Dialog */}
+      {showPayEmployeeDialog && contractAddress && (
+        <PayEmployeeDialog
+          companyId={contractAddress}
+          onSuccess={(payment) => {
+            console.log('[Dashboard] Payment processed:', payment);
+            // TanStack Query mutation will auto-invalidate and refetch data
+          }}
+          onClose={() => setShowPayEmployeeDialog(false)}
         />
       )}
     </div>

@@ -7,12 +7,16 @@ import { Building, ArrowLeft, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useWalletSelector } from '@near-wallet-selector/react-hook';
 import { CONFIG } from '@/config/contracts';
+import { generateRSAKeypair } from '@near-private-payroll/sdk';
+import { encryptKeypair, saveEncryptedKeypair, type Keypair } from '@/lib/secure-storage';
 
 interface CompanyFormData {
   companyName: string;
   industry: string;
   companySize: string;
   adminEmail: string;
+  encryptionPassword: string;
+  confirmPassword: string;
   agreedToTerms: boolean;
 }
 
@@ -25,6 +29,8 @@ export default function CompanyOnboardingPage() {
     industry: '',
     companySize: '',
     adminEmail: '',
+    encryptionPassword: '',
+    confirmPassword: '',
     agreedToTerms: false,
   });
 
@@ -60,6 +66,18 @@ export default function CompanyOnboardingPage() {
       newErrors.adminEmail = 'Please enter a valid email address';
     }
 
+    if (!formData.encryptionPassword.trim()) {
+      newErrors.encryptionPassword = 'Encryption password is required';
+    } else if (formData.encryptionPassword.length < 8) {
+      newErrors.encryptionPassword = 'Password must be at least 8 characters';
+    }
+
+    if (!formData.confirmPassword.trim()) {
+      newErrors.confirmPassword = 'Please confirm your password';
+    } else if (formData.encryptionPassword !== formData.confirmPassword) {
+      newErrors.confirmPassword = 'Passwords do not match';
+    }
+
     if (!formData.agreedToTerms) {
       newErrors.agreedToTerms = 'You must agree to the Terms of Service';
     }
@@ -87,15 +105,33 @@ export default function CompanyOnboardingPage() {
         throw new Error('Wallet not connected');
       }
 
+      console.log('[CompanyOnboarding] Generating RSA encryption keypair...');
+
+      // Generate company's RSA encryption keypair
+      const rsaKeypair = await generateRSAKeypair();
+      const keypair: Keypair = {
+        privateKey: Array.from(rsaKeypair.privateKey),
+        publicKey: Array.from(rsaKeypair.publicKey),
+      };
+
+      console.log('[CompanyOnboarding] Encrypting keypair with password...');
+
+      // Encrypt keypair with user's password
+      const encryptedKeypair = await encryptKeypair(keypair, formData.encryptionPassword);
+
+      // Save encrypted keypair to localStorage
+      saveEncryptedKeypair('company_keypair', encryptedKeypair);
+
       console.log('[CompanyOnboarding] Creating company...', formData);
       console.log('[CompanyOnboarding] Calling factory to deploy payroll contract...');
 
-      // Call factory contract to deploy new payroll contract
+      // Call factory contract to deploy new payroll contract with company's public key
       const txResult: any = await callFunction({
         contractId: CONFIG.payrollFactory,
         method: 'create_company',
         args: {
           company_name: formData.companyName,
+          company_public_key: Array.from(rsaKeypair.publicKey),
         },
         gas: '300000000000000', // 300 TGas (maximum per transaction)
         deposit: '5000000000000000000000000', // 5 NEAR in yoctoNEAR
@@ -294,6 +330,55 @@ export default function CompanyOnboardingPage() {
                 />
                 {errors.adminEmail && (
                   <p className="text-red-500 text-sm mt-1">{errors.adminEmail}</p>
+                )}
+              </div>
+
+              {/* Encryption Password */}
+              <div className="pt-4 border-t border-border">
+                <div className="mb-4 p-4 rounded-lg border border-blue-500/20 bg-blue-500/5">
+                  <p className="text-sm font-semibold mb-1">🔒 Encryption Security</p>
+                  <p className="text-xs text-muted-foreground">
+                    Set a password to encrypt your company's private keys. This password will be required to decrypt employee names and access sensitive data.
+                  </p>
+                </div>
+                <label className="block text-sm font-medium mb-2">
+                  Encryption Password <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  value={formData.encryptionPassword}
+                  onChange={(e) => setFormData({ ...formData, encryptionPassword: e.target.value })}
+                  className={`w-full px-3 py-2 rounded-lg border ${
+                    errors.encryptionPassword ? 'border-red-500' : 'border-border'
+                  } bg-background`}
+                  disabled={isSubmitting}
+                  placeholder="Minimum 8 characters"
+                />
+                {errors.encryptionPassword && (
+                  <p className="text-red-500 text-sm mt-1">{errors.encryptionPassword}</p>
+                )}
+                <p className="text-xs text-muted-foreground mt-1">
+                  Choose a strong password. You'll need this to access encrypted data.
+                </p>
+              </div>
+
+              {/* Confirm Password */}
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Confirm Password <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  value={formData.confirmPassword}
+                  onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
+                  className={`w-full px-3 py-2 rounded-lg border ${
+                    errors.confirmPassword ? 'border-red-500' : 'border-border'
+                  } bg-background`}
+                  disabled={isSubmitting}
+                  placeholder="Re-enter your password"
+                />
+                {errors.confirmPassword && (
+                  <p className="text-red-500 text-sm mt-1">{errors.confirmPassword}</p>
                 )}
               </div>
 

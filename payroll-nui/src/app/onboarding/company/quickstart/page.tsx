@@ -163,8 +163,10 @@ export default function CompanyQuickStartPage() {
       // Encrypt employee data
       const nameBytes = new TextEncoder().encode(employeeName.trim());
       const salaryBytes = new TextEncoder().encode(baseSalary.trim());
-      const encrypted_name = Array.from(encryptWithPublicKey(nameBytes, publicKey));
-      const encrypted_salary = Array.from(encryptWithPublicKey(salaryBytes, publicKey));
+      const encryptedNameBytes = await encryptWithPublicKey(nameBytes, publicKey);
+      const encryptedSalaryBytes = await encryptWithPublicKey(salaryBytes, publicKey);
+      const encrypted_name = Array.from(encryptedNameBytes);
+      const encrypted_salary = Array.from(encryptedSalaryBytes);
 
       // Generate salary commitment
       const salaryValue = BigInt(baseSalary.trim());
