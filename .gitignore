@@ -39,3 +39,4 @@ coverage/
 .nyc_output/
 ethereum-test/lib/*
 ethereum-test/out/*
+payroll-nui/.next/*
