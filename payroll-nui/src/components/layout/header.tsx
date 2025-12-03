@@ -1,9 +1,25 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
-import { Wallet } from 'lucide-react';
+import { Wallet, LogOut } from 'lucide-react';
+import { useWalletSelector } from '@near-wallet-selector/react-hook';
+import { useEffect, useState } from 'react';
 
 export function Header() {
+  const { signedAccountId, signIn, signOut } = useWalletSelector();
+  const [action, setAction] = useState<() => void>(() => () => {});
+  const [label, setLabel] = useState<string>('Connect Wallet');
+
+  useEffect(() => {
+    if (signedAccountId) {
+      setAction(() => signOut);
+      setLabel(signedAccountId);
+    } else {
+      setAction(() => signIn);
+      setLabel('Connect Wallet');
+    }
+  }, [signedAccountId, signIn, signOut]);
+
   return (
     <header className="fixed top-0 left-0 right-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-lg">
       <nav className="container mx-auto px-6 h-16 flex items-center justify-between">
@@ -28,10 +44,10 @@ export function Header() {
           </a>
         </div>
 
-        {/* CTA Button */}
-        <Button size="sm">
-          <Wallet className="w-4 h-4" />
-          Connect Wallet
+        {/* Wallet Button */}
+        <Button size="sm" onClick={action}>
+          {signedAccountId ? <LogOut className="w-4 h-4" /> : <Wallet className="w-4 h-4" />}
+          {label}
         </Button>
       </nav>
     </header>

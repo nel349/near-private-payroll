@@ -6,8 +6,11 @@ import { Shield, Lock, Zap, ArrowRight, Eye, CheckCircle, Code, Coins, FileKey }
 import { GravityStarsBackground } from '@/components/animate-ui/components/backgrounds/gravity-stars';
 import { Header } from '@/components/layout/header';
 import { Footer } from '@/components/layout/footer';
+import { useWalletSelector } from '@near-wallet-selector/react-hook';
 
 export default function Home() {
+  const { signIn } = useWalletSelector();
+
   return (
     <>
       {/* Header */}
@@ -43,11 +46,11 @@ export default function Home() {
 
             {/* CTA Buttons */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center pt-4">
-              <Button size="lg">
+              <Button size="lg" onClick={signIn}>
                 Connect Wallet
                 <ArrowRight className="w-5 h-5" />
               </Button>
-              <Button size="lg" variant="outline">
+              <Button size="lg" variant="outline" onClick={() => window.location.href = '/hello-near'}>
                 View Demo
               </Button>
             </div>
