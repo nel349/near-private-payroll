@@ -39,7 +39,7 @@ export const TESTNET_CONFIG: NetworkConfig = {
   wzecToken: 'wzec.testnet',
   zkVerifier: 'verifier.testnet',
   payrollFactory: 'payroll-factory.testnet',  // Factory for deploying company contracts
-  intentsAdapter: undefined, // Optional: for cross-chain bridge
+  intentsAdapter: 'intents-adapter.testnet', // NEAR Intents adapter for non-custodial cross-chain
   poaToken: undefined, // Optional: for NEAR Intents (mainnet only)
   nearIntents: undefined, // Optional: for DeFi features (mainnet only)
 

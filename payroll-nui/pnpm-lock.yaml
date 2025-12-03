@@ -92,6 +92,9 @@ importers:
       '@walletconnect/ethereum-provider':
         specifier: ~2.21.1
         version: 2.21.10(@types/react@19.2.7)(bufferutil@4.0.9)(encoding@0.1.13)(react@18.3.1)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.1.13)
+      axios:
+        specifier: ^1.13.2
+        version: 1.13.2
       bootstrap:
         specifier: ^5
         version: 5.3.8(@popperjs/core@2.11.8)

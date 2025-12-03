@@ -6,6 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { CheckCircle, Loader2, Copy, ExternalLink } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useWalletSelector } from '@near-wallet-selector/react-hook';
+import { generateSalaryCommitment, encryptWithPublicKey, generateBlinding } from '@near-private-payroll/sdk';
+import { CONFIG } from '@/config/contracts';
 
 interface QuickStartProgress {
   funded: boolean;
@@ -17,7 +19,7 @@ interface QuickStartProgress {
 
 export default function CompanyQuickStartPage() {
   const router = useRouter();
-  const { signedAccountId } = useWalletSelector();
+  const { signedAccountId, callFunction, viewFunction } = useWalletSelector();
 
   // Load company data from localStorage
   const [companyData, setCompanyData] = useState<any>(null);
@@ -27,8 +29,8 @@ export default function CompanyQuickStartPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Step 1: Fund Account
-  const [fundAmount, setFundAmount] = useState('10000');
-  const [token, setToken] = useState('wZEC');
+  const [fundAmount, setFundAmount] = useState('0.01');
+  const token = 'ZEC';
 
   // Step 2: Add Employee
   const [employeeName, setEmployeeName] = useState('');
@@ -66,16 +68,71 @@ export default function CompanyQuickStartPage() {
     setError(null);
 
     try {
-      console.log('[QuickStart] Funding account:', fundAmount, token);
+      if (!companyData?.contractAddress) {
+        throw new Error('Company contract address not found');
+      }
 
-      // TODO: Deposit company funds to payroll contract
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (!signedAccountId) {
+        throw new Error('Wallet not connected');
+      }
+
+      if (!fundAmount || parseFloat(fundAmount) <= 0) {
+        throw new Error('Please enter a valid amount');
+      }
+
+      console.log('[QuickStart] Initiating bridge deposit:', fundAmount, 'ZEC');
+      console.log('[QuickStart] Flow: ZEC → Bridge Custody → wZEC Mint → Payroll Contract');
+
+      // fundAmount is already in ZEC, just validate and format
+      const zecAmount = parseFloat(fundAmount).toFixed(8);
+
+      // Step 1: Send ZEC to bridge (simulated via API)
+      console.log('[QuickStart] Step 1: Sending ZEC to bridge custody...');
+      const bridgeResponse = await fetch('/api/bridge/simulate-deposit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amount: zecAmount,
+          companyId: companyData.contractAddress,
+        }),
+      });
+
+      if (!bridgeResponse.ok) {
+        const errorData = await bridgeResponse.json();
+        throw new Error(errorData.error || 'Bridge deposit failed');
+      }
+
+      const bridgeResult = await bridgeResponse.json();
+      console.log('[QuickStart]   ✓ ZEC sent to bridge:', bridgeResult.txid);
+      console.log('[QuickStart]   Bridge-relayer will mint wZEC and deposit to contract');
+
+      // Step 2: Wait for bridge-relayer to process (in real app, would poll for confirmation)
+      console.log('[QuickStart] Step 2: Waiting for bridge-relayer to process...');
+      await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds for relayer
+
+      console.log('[QuickStart] ✅ Bridge deposit initiated!');
+      console.log('[QuickStart] Check bridge-relayer logs to confirm wZEC minting');
 
       setProgress({ ...progress, funded: true, fundedAmount: parseFloat(fundAmount) });
       setActiveStep(1);
     } catch (err) {
       console.error('[QuickStart] Error funding account:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fund account');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to fund account';
+
+      // Provide helpful error messages
+      if (errorMessage.includes('Zcash wallet not running') || errorMessage.includes('Zallet')) {
+        setError('Zcash wallet (Zallet) is not running. Please start it or skip this step.');
+      } else if (errorMessage.toLowerCase().includes('insufficient')) {
+        setError('Insufficient ZEC balance in wallet. Mine some test ZEC or skip this step.');
+      } else if (errorMessage.includes('Bridge deposit failed')) {
+        setError('Bridge service unavailable. You can skip and fund later.');
+      } else if (errorMessage.includes('funds available')) {
+        setError('No ZEC funds in wallet. Run: zcash-cli generate 101. Or skip this step.');
+      } else {
+        setError(`Deposit failed: ${errorMessage}. You can skip and fund later.`);
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -90,10 +147,49 @@ export default function CompanyQuickStartPage() {
         throw new Error('Employee name and wallet address are required');
       }
 
+      if (!baseSalary.trim()) {
+        throw new Error('Base salary is required');
+      }
+
+      if (!companyData?.contractAddress) {
+        throw new Error('Company contract address not found');
+      }
+
       console.log('[QuickStart] Adding employee:', employeeName);
 
-      // TODO: Add employee to payroll contract
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Generate encryption key pair (placeholder for development)
+      const publicKey = generateBlinding(); // Using random bytes as placeholder public key
+
+      // Encrypt employee data
+      const nameBytes = new TextEncoder().encode(employeeName.trim());
+      const salaryBytes = new TextEncoder().encode(baseSalary.trim());
+      const encrypted_name = Array.from(encryptWithPublicKey(nameBytes, publicKey));
+      const encrypted_salary = Array.from(encryptWithPublicKey(salaryBytes, publicKey));
+
+      // Generate salary commitment
+      const salaryValue = BigInt(baseSalary.trim());
+      const blinding = generateBlinding();
+      const commitment = generateSalaryCommitment(salaryValue, blinding);
+      const salary_commitment = Array.from(commitment.value);
+
+      console.log('[QuickStart] Encrypted data generated, calling contract...');
+
+      // Add employee to payroll contract with proper encryption
+      await callFunction({
+        contractId: companyData.contractAddress,
+        method: 'add_employee',
+        args: {
+          employee_id: employeeWallet.trim(),
+          encrypted_name,
+          encrypted_salary,
+          salary_commitment,
+          public_key: Array.from(publicKey),
+        },
+        gas: '50000000000000', // 50 TGas
+        deposit: '0', // No deposit required
+      });
+
+      console.log('[QuickStart] Employee added successfully');
 
       setProgress({ ...progress, employeeAdded: true, employeeName });
       setActiveStep(2);
@@ -233,9 +329,22 @@ export default function CompanyQuickStartPage() {
                   </p>
                 </div>
 
+                <div className="p-4 rounded-lg border border-blue-500/20 bg-blue-500/5">
+                  <p className="text-sm mb-2">
+                    🔒 <span className="font-semibold">Privacy-Preserving Payroll with Bridge</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    Your payroll uses zero-knowledge proofs to keep employee salaries private while enabling trustless income verification.
+                    Payments are secured with cryptographic commitments.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-semibold">Bridge Flow:</span> ZEC sent to custody → Bridge-relayer detects → Mints wZEC on NEAR → Deposits to your payroll contract
+                  </p>
+                </div>
+
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium mb-2">Amount</label>
+                    <label className="block text-sm font-medium mb-2">Amount (ZEC)</label>
                     <input
                       type="number"
                       value={fundAmount}
@@ -246,15 +355,15 @@ export default function CompanyQuickStartPage() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium mb-2">Token</label>
-                    <select
+                    <input
+                      type="text"
                       value={token}
-                      onChange={(e) => setToken(e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg border border-border bg-background"
-                      disabled={isProcessing}
-                    >
-                      <option value="wZEC">wZEC</option>
-                      <option value="NEAR">NEAR</option>
-                    </select>
+                      className="w-full px-3 py-2 rounded-lg border border-border bg-muted/50"
+                      disabled
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Bridges to wZEC on NEAR
+                    </p>
                   </div>
                 </div>
 
