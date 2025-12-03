@@ -1,9 +1,6 @@
-@import 'bootstrap';
-@import 'bootstrap-icons';
-@import "tailwindcss";
-@import "tw-animate-css";
-
-@custom-variant dark (&:is(.dark *));
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
   --max-width: 1100px;
@@ -166,4 +163,88 @@ a {
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Custom animations and effects inspired by zkSalaria */
+@keyframes gradientShift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes glow {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Gradient text effect */
+.gradient-text {
+  background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Animated gradient background */
+.gradient-bg {
+  background: linear-gradient(135deg, hsl(var(--primary) / 0.1) 0%, hsl(var(--accent) / 0.1) 100%);
+  background-size: 200% 200%;
+  animation: gradientShift 8s ease infinite;
+}
+
+/* Glass morphism effect */
+.glass {
+  background: hsl(var(--background) / 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid hsl(var(--border) / 0.5);
+}
+
+/* Accent shadow with glow */
+.shadow-accent {
+  box-shadow: 0 10px 40px -10px hsl(var(--primary) / 0.3),
+              0 0 20px -5px hsl(var(--primary) / 0.2);
+}
+
+.shadow-accent-lg {
+  box-shadow: 0 20px 60px -15px hsl(var(--primary) / 0.4),
+              0 0 30px -5px hsl(var(--primary) / 0.3);
+}
+
+/* Mesh gradient background */
+.mesh-gradient {
+  background:
+    radial-gradient(at 27% 37%, hsl(var(--primary) / 0.15) 0px, transparent 50%),
+    radial-gradient(at 97% 21%, hsl(var(--accent) / 0.15) 0px, transparent 50%),
+    radial-gradient(at 52% 99%, hsl(var(--primary) / 0.1) 0px, transparent 50%),
+    radial-gradient(at 10% 29%, hsl(var(--accent) / 0.1) 0px, transparent 50%),
+    radial-gradient(at 97% 96%, hsl(var(--primary) / 0.15) 0px, transparent 50%),
+    radial-gradient(at 33% 50%, hsl(var(--accent) / 0.15) 0px, transparent 50%),
+    radial-gradient(at 79% 53%, hsl(var(--primary) / 0.1) 0px, transparent 50%);
 }
