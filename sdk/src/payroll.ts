@@ -2,7 +2,7 @@
  * NEAR Private Payroll Contract Interface
  */
 
-import { Contract, Near, Account } from 'near-api-js';
+import { Contract, Near, Account, utils, transactions, KeyPair } from 'near-api-js';
 import {
   Employee,
   EmploymentStatus,
@@ -154,6 +154,118 @@ export class PrivatePayroll {
       ],
       useLocalViewExecution: false,
     }) as Contract & PayrollContractMethods;
+  }
+
+  // ==================== CONTRACT DEPLOYMENT ====================
+
+  /**
+   * Deploy a new payroll contract for a company
+   *
+   * Creates a new subaccount, deploys the payroll contract WASM,
+   * and initializes it with the company as owner.
+   *
+   * @param account - Company's NEAR account
+   * @param companyName - Name of the company (used for subaccount generation)
+   * @param wzecToken - wZEC token contract address
+   * @param zkVerifier - ZK verifier contract address
+   * @param wasmUrl - URL to fetch WASM file from (e.g., '/payroll.wasm')
+   * @returns The deployed contract address
+   *
+   * @example
+   * ```typescript
+   * const contractAddress = await PrivatePayroll.deploy(
+   *   account,
+   *   'Acme Corp',
+   *   'wzec.testnet',
+   *   'verifier.testnet',
+   *   '/contracts/payroll.wasm'
+   * );
+   * ```
+   */
+  static async deploy(
+    account: Account,
+    companyName: string,
+    wzecToken: string,
+    zkVerifier: string,
+    wasmUrl: string
+  ): Promise<string> {
+    // Generate subaccount name from company name + timestamp
+    const sanitizedName = companyName
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .substring(0, 20);
+
+    const timestamp = Date.now();
+    const subaccountId = `${sanitizedName}-${timestamp}.${account.accountId}`;
+
+    console.log(`[PrivatePayroll] Deploying contract to: ${subaccountId}`);
+
+    // Fetch WASM file
+    console.log(`[PrivatePayroll] Fetching WASM from: ${wasmUrl}`);
+    const response = await fetch(wasmUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch WASM file: ${response.statusText}`);
+    }
+    const wasmBytes = new Uint8Array(await response.arrayBuffer());
+    console.log(`[PrivatePayroll] WASM loaded: ${wasmBytes.length} bytes`);
+
+    // Create subaccount and deploy
+    const initialBalance = utils.format.parseNearAmount('5') || '0'; // 5 NEAR for storage
+
+    try {
+      // Get public key for the new subaccount
+      const publicKey = await account.connection.signer.getPublicKey(
+        account.accountId,
+        account.connection.networkId
+      );
+
+      // Create actions for deployment
+      const actions = [
+        transactions.createAccount(),
+        transactions.transfer(BigInt(initialBalance)),
+        transactions.deployContract(wasmBytes),
+        transactions.functionCall(
+          'new',
+          {
+            owner: account.accountId,
+            wzec_token: wzecToken,
+            zk_verifier: zkVerifier,
+          },
+          BigInt('300000000000000'), // 300 TGas
+          BigInt('0')
+        ),
+      ];
+
+      console.log(`[PrivatePayroll] Creating subaccount and deploying contract...`);
+
+      // Sign and send transaction
+      await account.signAndSendTransaction({
+        receiverId: subaccountId,
+        actions,
+      });
+
+      console.log(`[PrivatePayroll] Contract deployed and initialized successfully`);
+      console.log(`[PrivatePayroll] Contract address: ${subaccountId}`);
+      console.log(`[PrivatePayroll] Owner: ${account.accountId}`);
+
+      return subaccountId;
+    } catch (error) {
+      console.error('[PrivatePayroll] Deployment failed:', error);
+      throw new Error(`Failed to deploy contract: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Connect to an existing payroll contract
+   *
+   * @param account - NEAR account (employee or company)
+   * @param contractId - Deployed contract address
+   * @returns PrivatePayroll instance
+   */
+  static connect(account: Account, contractId: string): PrivatePayroll {
+    return new PrivatePayroll(account, contractId);
   }
 
   // ==================== COMPANY OPERATIONS ====================

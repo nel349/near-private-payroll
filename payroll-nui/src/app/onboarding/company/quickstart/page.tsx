@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { CheckCircle, Loader2 } from 'lucide-react';
+import { CheckCircle, Loader2, Copy, ExternalLink } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useWalletSelector } from '@near-wallet-selector/react-hook';
 
@@ -18,6 +18,9 @@ interface QuickStartProgress {
 export default function CompanyQuickStartPage() {
   const router = useRouter();
   const { signedAccountId } = useWalletSelector();
+
+  // Load company data from localStorage
+  const [companyData, setCompanyData] = useState<any>(null);
 
   const [activeStep, setActiveStep] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -45,6 +48,18 @@ export default function CompanyQuickStartPage() {
   });
 
   const steps = ['Fund Account', 'Add First Employee', 'Setup Recurring Payment'];
+
+  // Load company data on mount
+  useEffect(() => {
+    const data = localStorage.getItem('company_data');
+    if (data) {
+      setCompanyData(JSON.parse(data));
+    }
+  }, []);
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
 
   const handleFundAccount = async () => {
     setIsProcessing(true);
@@ -137,6 +152,41 @@ export default function CompanyQuickStartPage() {
           </CardHeader>
 
           <CardContent className="space-y-8">
+            {/* Company Info */}
+            {companyData && (
+              <div className="p-4 rounded-lg border border-primary/20 bg-primary/5">
+                <h3 className="font-semibold text-sm mb-3">Your Payroll Contract</h3>
+                <div className="space-y-2">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Company Name</p>
+                    <p className="font-mono text-sm">{companyData.companyName}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Contract Address</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-mono text-sm flex-1 break-all">{companyData.contractAddress}</p>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => copyToClipboard(companyData.contractAddress)}
+                        className="shrink-0"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => window.open(`https://explorer.testnet.near.org/accounts/${companyData.contractAddress}`, '_blank')}
+                        className="shrink-0"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Stepper */}
             <div className="flex items-center justify-between">
               {steps.map((step, index) => (

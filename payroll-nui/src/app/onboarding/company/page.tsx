@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Building, ArrowLeft, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useWalletSelector } from '@near-wallet-selector/react-hook';
+import { CONFIG } from '@/config/contracts';
 
 interface CompanyFormData {
   companyName: string;
@@ -17,7 +18,7 @@ interface CompanyFormData {
 
 export default function CompanyOnboardingPage() {
   const router = useRouter();
-  const { signedAccountId } = useWalletSelector();
+  const { callFunction, signedAccountId } = useWalletSelector();
 
   const [formData, setFormData] = useState<CompanyFormData>({
     companyName: '',
@@ -87,15 +88,90 @@ export default function CompanyOnboardingPage() {
       }
 
       console.log('[CompanyOnboarding] Creating company...', formData);
+      console.log('[CompanyOnboarding] Calling factory to deploy payroll contract...');
 
-      // TODO: Deploy payroll contract or register company
-      // const contractAddress = await deployPayrollContract(formData.companyName);
+      // Call factory contract to deploy new payroll contract
+      const txResult: any = await callFunction({
+        contractId: CONFIG.payrollFactory,
+        method: 'create_company',
+        args: {
+          company_name: formData.companyName,
+        },
+        gas: '300000000000000', // 300 TGas (maximum per transaction)
+        deposit: '5000000000000000000000000', // 5 NEAR in yoctoNEAR
+      });
 
-      // Save to localStorage for now
+      console.log('[CompanyOnboarding] Full transaction result:', txResult);
+
+      // Extract contract address from transaction result
+      // The factory's on_company_created callback returns the AccountId
+      let contractAddress = '';
+
+      // Try different paths where the return value might be
+      if (txResult) {
+        // Log the entire structure to see what we get
+        console.log('[CompanyOnboarding] Transaction keys:', Object.keys(txResult));
+
+        // Common paths in NEAR transaction results:
+        const possiblePaths = [
+          txResult,                                    // Direct return
+          txResult.status?.SuccessValue,               // Encoded success value
+          txResult.transaction_outcome?.outcome?.status?.SuccessValue,
+          txResult.receipts_outcome?.[0]?.outcome?.status?.SuccessValue,
+        ];
+
+        for (const path of possiblePaths) {
+          if (path && typeof path === 'string') {
+            try {
+              // Decode base64 if it's encoded
+              const decoded = Buffer.from(path, 'base64').toString('utf-8');
+              console.log('[CompanyOnboarding] Decoded value:', decoded);
+              // Parse JSON if it's JSON-encoded
+              const parsed = JSON.parse(decoded);
+              if (typeof parsed === 'string' && parsed.includes('.payroll-factory.testnet')) {
+                contractAddress = parsed.replace(/^"|"$/g, ''); // Remove quotes
+                break;
+              }
+            } catch (e) {
+              // Not base64 or JSON, try as direct string
+              if (typeof path === 'string' && path.includes('.payroll-factory.testnet')) {
+                contractAddress = path;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // If we still don't have it, check the logs
+      if (!contractAddress) {
+        console.log('[CompanyOnboarding] Could not extract from return value, checking logs...');
+        // The factory logs: "Company contract created: {address} (owner: {owner})"
+        const logs = txResult?.receipts_outcome?.flatMap((r: any) => r.outcome.logs || []) || [];
+        console.log('[CompanyOnboarding] Transaction logs:', logs);
+
+        for (const log of logs) {
+          const match = log.match(/Company contract created: ([\w.-]+\.payroll-factory\.testnet)/);
+          if (match) {
+            contractAddress = match[1];
+            console.log('[CompanyOnboarding] Extracted from log:', contractAddress);
+            break;
+          }
+        }
+      }
+
+      if (!contractAddress) {
+        throw new Error('Failed to get deployed contract address. Please check NEAR Explorer.');
+      }
+
+      console.log('[CompanyOnboarding] Contract deployed at:', contractAddress);
+
+      // Save company data + contract address to localStorage
       localStorage.setItem('user_role', 'company');
       localStorage.setItem('company_data', JSON.stringify({
         ...formData,
         walletAddress: signedAccountId,
+        contractAddress,
         createdAt: new Date().toISOString(),
       }));
 
@@ -103,7 +179,16 @@ export default function CompanyOnboardingPage() {
       router.push('/onboarding/company/quickstart');
     } catch (err) {
       console.error('[CompanyOnboarding] Error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to create company');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to create company';
+
+      // Provide more helpful error messages
+      if (errorMessage.includes('fetch')) {
+        setError('Failed to load contract WASM file. Please check your internet connection.');
+      } else if (errorMessage.includes('Insufficient')) {
+        setError('Insufficient NEAR balance. You need at least 5 NEAR to deploy a contract.');
+      } else {
+        setError(errorMessage);
+      }
     } finally {
       setIsSubmitting(false);
     }

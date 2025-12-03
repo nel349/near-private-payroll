@@ -9,7 +9,7 @@ import { useWalletSelector } from '@near-wallet-selector/react-hook';
 
 export default function EmployeeOnboardingPage() {
   const router = useRouter();
-  const { signedAccountId } = useWalletSelector();
+  const { signedAccountId, viewFunction } = useWalletSelector();
 
   const [contractAddress, setContractAddress] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
@@ -35,25 +35,44 @@ export default function EmployeeOnboardingPage() {
     try {
       console.log(`[EmployeeOnboarding] Verifying employment at ${contractAddress}...`);
 
-      // TODO: Connect to payroll contract and verify employee registration
-      // const api = await PrivatePayroll.connect(contractAddress);
-      // const employee = await api.getEmployee(signedAccountId);
+      // Call the contract to verify employee exists (view method)
+      const employee = await viewFunction({
+        contractId: contractAddress.trim(),
+        method: 'get_employee',
+        args: { employee_id: signedAccountId },
+      });
 
-      // Simulate verification
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (!employee) {
+        throw new Error('You are not registered as an employee at this company. Please contact your employer.');
+      }
 
-      // For now, just save to localStorage
-      const mockCompanyName = 'Demo Company';
+      console.log('[EmployeeOnboarding] Employee found:', employee);
 
+      // Try to get company name from contract stats (best effort)
+      let companyName = 'Your Company';
+      try {
+        // We can infer company name from contract address
+        const contractParts = contractAddress.split('.');
+        if (contractParts.length > 1) {
+          companyName = contractParts[0]
+            .split('-')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
+        }
+      } catch (e) {
+        console.warn('[EmployeeOnboarding] Could not determine company name');
+      }
+
+      // Save to localStorage
       localStorage.setItem('user_role', 'employee');
       localStorage.setItem('employer_contract', contractAddress.trim());
       localStorage.setItem('employer_data', JSON.stringify({
         contractAddress: contractAddress.trim(),
-        companyName: mockCompanyName,
+        companyName,
         joinedAt: new Date().toISOString(),
       }));
 
-      setCompanyName(mockCompanyName);
+      setCompanyName(companyName);
       setSuccess(true);
 
       // Redirect to employee dashboard after 2 seconds
@@ -62,7 +81,16 @@ export default function EmployeeOnboardingPage() {
       }, 2000);
     } catch (err) {
       console.error('[EmployeeOnboarding] Verification failed:', err);
-      setError(err instanceof Error ? err.message : 'Failed to verify employment');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to verify employment';
+
+      // Provide more helpful error messages
+      if (errorMessage.includes('not registered') || errorMessage.includes('not found')) {
+        setError('You are not registered as an employee at this company. Please contact your employer.');
+      } else if (errorMessage.includes('does not exist') || errorMessage.includes('contract')) {
+        setError('Invalid contract address. Please check the address and try again.');
+      } else {
+        setError(errorMessage);
+      }
     } finally {
       setIsVerifying(false);
     }

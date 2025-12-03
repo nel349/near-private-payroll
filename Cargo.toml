@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "contracts/payroll",
+    "contracts/payroll-factory",
     "contracts/wzec-token",
     "contracts/zk-verifier",
     "contracts/intents-adapter",

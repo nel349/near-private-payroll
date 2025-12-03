@@ -54,17 +54,5 @@ export {
   AutoLendConfig,
 } from './types';
 
-// Re-export NEAR Intents SDK widgets and utilities for frontend integration
-export {
-  SwapWidget,
-  WithdrawWidget,
-  DepositWidget,
-  AccountWidget,
-  createSwapIntentMessage,
-  createWithdrawIntentMessage,
-  formatSignedIntent,
-  formatUserIdentity,
-  type BaseTokenInfo,
-  type UnifiedTokenInfo,
-  ChainType,
-} from '@defuse-protocol/defuse-sdk';
+// Note: @defuse-protocol/defuse-sdk widgets are available but not re-exported
+// due to module resolution issues. Import directly from '@defuse-protocol/defuse-sdk' if needed.
