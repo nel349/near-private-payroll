@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, Wallet, X } from 'lucide-react';
+import { useFundAccount } from '@/lib/hooks/use-payroll-queries';
 
 interface FundAccountDialogProps {
   companyId: string;
@@ -12,14 +13,14 @@ interface FundAccountDialogProps {
 }
 
 export function FundAccountDialog({ companyId, onSuccess, onClose }: FundAccountDialogProps) {
+  const fundAccountMutation = useFundAccount();
+
   const [fundAmount, setFundAmount] = useState('0.01');
   const [token] = useState('ZEC');
-  const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ amount: number; txid: string } | null>(null);
 
   const handleFundAccount = async () => {
-    setIsProcessing(true);
     setError(null);
     setSuccess(null);
 
@@ -32,42 +33,19 @@ export function FundAccountDialog({ companyId, onSuccess, onClose }: FundAccount
       console.log('[FundAccount] Initiating bridge deposit:', fundAmount, 'ZEC');
       console.log('[FundAccount] Flow: ZEC → Bridge Custody → wZEC Mint → Payroll Contract');
 
-      // fundAmount is already in ZEC, just validate and format
-      const zecAmount = parseFloat(fundAmount).toFixed(8);
-
-      // Step 1: Send ZEC to bridge (simulated via API)
-      console.log('[FundAccount] Step 1: Sending ZEC to bridge custody...');
-      const bridgeResponse = await fetch('/api/bridge/simulate-deposit', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          amount: zecAmount,
-          companyId: companyId,
-        }),
+      // Use TanStack Query mutation
+      const result = await fundAccountMutation.mutateAsync({
+        amount: fundAmount,
+        companyId: companyId,
       });
-
-      if (!bridgeResponse.ok) {
-        const errorData = await bridgeResponse.json();
-        throw new Error(errorData.error || 'Bridge deposit failed');
-      }
-
-      const bridgeResult = await bridgeResponse.json();
-      console.log('[FundAccount]   ✓ ZEC sent to bridge:', bridgeResult.txid);
-      console.log('[FundAccount]   Bridge-relayer will mint wZEC and deposit to contract');
-
-      // Step 2: Wait for bridge-relayer to process
-      console.log('[FundAccount] Step 2: Waiting for bridge-relayer to process...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
 
       console.log('[FundAccount] ✅ Bridge deposit initiated!');
       console.log('[FundAccount] Check bridge-relayer logs to confirm wZEC minting');
 
-      setSuccess({ amount: parseFloat(fundAmount), txid: bridgeResult.txid });
+      setSuccess({ amount: parseFloat(fundAmount), txid: result.txid });
 
       if (onSuccess) {
-        onSuccess(parseFloat(fundAmount), bridgeResult.txid);
+        onSuccess(parseFloat(fundAmount), result.txid);
       }
     } catch (err) {
       console.error('[FundAccount] Error funding account:', err);
@@ -85,8 +63,6 @@ export function FundAccountDialog({ companyId, onSuccess, onClose }: FundAccount
       } else {
         setError(`Deposit failed: ${errorMessage}`);
       }
-    } finally {
-      setIsProcessing(false);
     }
   };
 
@@ -105,7 +81,7 @@ export function FundAccountDialog({ companyId, onSuccess, onClose }: FundAccount
               variant="ghost"
               size="sm"
               onClick={onClose}
-              disabled={isProcessing}
+              disabled={fundAccountMutation.isPending}
               className="h-8 w-8 p-0"
             >
               <X className="w-4 h-4" />
@@ -152,7 +128,7 @@ export function FundAccountDialog({ companyId, onSuccess, onClose }: FundAccount
                 value={fundAmount}
                 onChange={(e) => setFundAmount(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-border bg-background"
-                disabled={isProcessing || !!success}
+                disabled={fundAccountMutation.isPending || !!success}
                 step="0.001"
                 min="0.001"
               />
@@ -178,7 +154,7 @@ export function FundAccountDialog({ companyId, onSuccess, onClose }: FundAccount
                 variant="outline"
                 className="flex-1"
                 onClick={onClose}
-                disabled={isProcessing}
+                disabled={fundAccountMutation.isPending}
               >
                 Cancel
               </Button>
@@ -186,10 +162,10 @@ export function FundAccountDialog({ companyId, onSuccess, onClose }: FundAccount
             <Button
               className="flex-1"
               onClick={handleFundAccount}
-              disabled={isProcessing || !!success}
+              disabled={fundAccountMutation.isPending || !!success}
             >
-              {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {isProcessing ? 'Processing...' : success ? 'Deposited!' : 'Deposit Now'}
+              {fundAccountMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {fundAccountMutation.isPending ? 'Processing...' : success ? 'Deposited!' : 'Deposit Now'}
             </Button>
           </div>
         </CardContent>

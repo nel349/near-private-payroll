@@ -5,10 +5,22 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Wallet, History, FileCheck, Shield, Download } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useEmployeeDashboard } from '@/lib/hooks/use-payroll-queries';
 
 export default function EmployeeDashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'overview' | 'payments' | 'proofs' | 'withdraw'>('overview');
+
+  // Centralized dashboard queries
+  const {
+    signedAccountId,
+    companyContractId,
+    employeeData,
+    availableBalance,
+    lentBalance,
+    paymentCount,
+    isLoadingStats,
+  } = useEmployeeDashboard();
 
   return (
     <div className="container mx-auto px-6 py-8">
@@ -18,6 +30,16 @@ export default function EmployeeDashboardPage() {
         <p className="text-muted-foreground">
           View your private income and generate zero-knowledge proofs
         </p>
+        {signedAccountId && (
+          <p className="text-xs text-muted-foreground mt-2">
+            Account: <span className="font-mono">{signedAccountId}</span>
+          </p>
+        )}
+        {companyContractId && (
+          <p className="text-xs text-muted-foreground mt-1">
+            Company Contract: <span className="font-mono">{companyContractId}</span>
+          </p>
+        )}
       </div>
 
       {/* Stats Cards */}
@@ -30,7 +52,13 @@ export default function EmployeeDashboardPage() {
             <Wallet className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0.00 wZEC</div>
+            <div className="text-2xl font-bold">
+              {isLoadingStats ? (
+                <span className="text-muted-foreground">Loading...</span>
+              ) : (
+                <>{availableBalance} wZEC</>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground mt-1">
               Ready to withdraw
             </p>
@@ -45,7 +73,13 @@ export default function EmployeeDashboardPage() {
             <Shield className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0.00 wZEC</div>
+            <div className="text-2xl font-bold">
+              {isLoadingStats ? (
+                <span className="text-muted-foreground">Loading...</span>
+              ) : (
+                <>{lentBalance} wZEC</>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground mt-1">
               In DeFi protocols
             </p>
@@ -60,7 +94,13 @@ export default function EmployeeDashboardPage() {
             <History className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
+            <div className="text-2xl font-bold">
+              {isLoadingStats ? (
+                <span className="text-muted-foreground">Loading...</span>
+              ) : (
+                paymentCount
+              )}
+            </div>
             <p className="text-xs text-muted-foreground mt-1">
               Payments received
             </p>

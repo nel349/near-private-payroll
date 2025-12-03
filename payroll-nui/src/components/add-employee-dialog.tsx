@@ -4,8 +4,8 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, UserPlus, X } from 'lucide-react';
-import { useWalletSelector } from '@near-wallet-selector/react-hook';
 import { generateBlinding, generateSalaryCommitment, encryptWithPublicKey } from '@near-private-payroll/sdk';
+import { useAddEmployee } from '@/lib/hooks/use-payroll-queries';
 
 interface AddEmployeeDialogProps {
   companyId: string;
@@ -14,18 +14,16 @@ interface AddEmployeeDialogProps {
 }
 
 export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployeeDialogProps) {
-  const { callFunction } = useWalletSelector();
+  const addEmployeeMutation = useAddEmployee();
 
   const [employeeName, setEmployeeName] = useState('');
   const [employeeWallet, setEmployeeWallet] = useState('');
   const [baseSalary, setBaseSalary] = useState('');
   const [employeeRole, setEmployeeRole] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
   const handleAddEmployee = async () => {
-    setIsProcessing(true);
     setError(null);
     setSuccess(false);
 
@@ -57,19 +55,14 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
 
       console.log('[AddEmployee] Encrypted data generated, calling contract...');
 
-      // Add employee to payroll contract with proper encryption
-      await callFunction({
+      // Add employee using TanStack Query mutation
+      await addEmployeeMutation.mutateAsync({
         contractId: companyId,
-        method: 'add_employee',
-        args: {
-          employee_id: employeeWallet.trim(),
-          encrypted_name,
-          encrypted_salary,
-          salary_commitment,
-          public_key: Array.from(publicKey),
-        },
-        gas: '50000000000000', // 50 TGas
-        deposit: '0', // No deposit required
+        employeeId: employeeWallet.trim(),
+        encrypted_name,
+        encrypted_salary,
+        salary_commitment,
+        public_key: Array.from(publicKey),
       });
 
       console.log('[AddEmployee] Employee added successfully');
@@ -95,8 +88,6 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
     } catch (err) {
       console.error('[AddEmployee] Error adding employee:', err);
       setError(err instanceof Error ? err.message : 'Failed to add employee');
-    } finally {
-      setIsProcessing(false);
     }
   };
 
@@ -115,7 +106,7 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
               variant="ghost"
               size="sm"
               onClick={onClose}
-              disabled={isProcessing}
+              disabled={addEmployeeMutation.isPending}
               className="h-8 w-8 p-0"
             >
               <X className="w-4 h-4" />
@@ -158,7 +149,7 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
               value={employeeName}
               onChange={(e) => setEmployeeName(e.target.value)}
               className="w-full px-3 py-2 rounded-lg border border-border bg-background"
-              disabled={isProcessing || success}
+              disabled={addEmployeeMutation.isPending || success}
               placeholder="John Doe"
             />
           </div>
@@ -171,7 +162,7 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
               onChange={(e) => setEmployeeWallet(e.target.value)}
               className="w-full px-3 py-2 rounded-lg border border-border bg-background font-mono text-sm"
               placeholder="employee.near"
-              disabled={isProcessing || success}
+              disabled={addEmployeeMutation.isPending || success}
             />
             <p className="text-xs text-muted-foreground mt-1">The employee's NEAR account</p>
           </div>
@@ -184,7 +175,7 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
                 value={baseSalary}
                 onChange={(e) => setBaseSalary(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-border bg-background"
-                disabled={isProcessing || success}
+                disabled={addEmployeeMutation.isPending || success}
                 step="0.001"
                 min="0"
                 placeholder="0.05"
@@ -197,7 +188,7 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
                 value={employeeRole}
                 onChange={(e) => setEmployeeRole(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-border bg-background"
-                disabled={isProcessing || success}
+                disabled={addEmployeeMutation.isPending || success}
                 placeholder="Developer"
               />
             </div>
@@ -210,7 +201,7 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
                 variant="outline"
                 className="flex-1"
                 onClick={onClose}
-                disabled={isProcessing}
+                disabled={addEmployeeMutation.isPending}
               >
                 Cancel
               </Button>
@@ -218,10 +209,10 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
             <Button
               className="flex-1"
               onClick={handleAddEmployee}
-              disabled={isProcessing || success || !employeeName || !employeeWallet || !baseSalary}
+              disabled={addEmployeeMutation.isPending || success || !employeeName || !employeeWallet || !baseSalary}
             >
-              {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {isProcessing ? 'Adding...' : success ? 'Added!' : 'Add Employee'}
+              {addEmployeeMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {addEmployeeMutation.isPending ? 'Adding...' : success ? 'Added!' : 'Add Employee'}
             </Button>
           </div>
         </CardContent>

@@ -1,118 +1,44 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Users, UserPlus, Wallet, Send, Calendar } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useWalletSelector } from '@near-wallet-selector/react-hook';
-import { CONFIG } from '@/config/contracts';
 import { FundAccountDialog } from '@/components/fund-account-dialog';
 import { AddEmployeeDialog } from '@/components/add-employee-dialog';
 import { RecurringPaymentDialog } from '@/components/recurring-payment-dialog';
+import { useCompanyDashboard } from '@/lib/hooks/use-payroll-queries';
 
 export default function CompanyDashboardPage() {
   const router = useRouter();
-  const { viewFunction } = useWalletSelector();
   const [activeTab, setActiveTab] = useState<'overview' | 'employees' | 'payments'>('overview');
 
-  // Company data and stats
-  const [companyData, setCompanyData] = useState<any>(null);
-  const [balance, setBalance] = useState<string>('0.00');
-  const [employeeCount, setEmployeeCount] = useState<number>(0);
-  const [isLoading, setIsLoading] = useState(true);
+  // Centralized dashboard queries
+  const {
+    companyData,
+    contractAddress,
+    balance,
+    employeeCount,
+    totalPayments,
+    isLoadingBalance,
+    isLoadingStats,
+  } = useCompanyDashboard();
 
   // Dialog states
   const [showFundDialog, setShowFundDialog] = useState(false);
   const [showAddEmployeeDialog, setShowAddEmployeeDialog] = useState(false);
   const [showRecurringDialog, setShowRecurringDialog] = useState(false);
 
-  // Load company data and fetch balance
-  useEffect(() => {
-    const loadCompanyData = () => {
-      const data = localStorage.getItem('company_data');
-      if (data) {
-        setCompanyData(JSON.parse(data));
-      }
-    };
-
-    loadCompanyData();
-  }, []);
-
-  // Fetch balance when company data is loaded
-  useEffect(() => {
-    const fetchBalance = async () => {
-      if (!companyData?.contractAddress) return;
-
-      try {
-        setIsLoading(true);
-
-        console.log('[Dashboard] Fetching balance for:', companyData.contractAddress);
-        console.log('[Dashboard] wZEC token contract:', CONFIG.wzecToken);
-
-        // Query wZEC balance of the payroll contract
-        const balanceResult = await viewFunction({
-          contractId: CONFIG.wzecToken,
-          method: 'ft_balance_of',
-          args: {
-            account_id: companyData.contractAddress,
-          },
-        });
-
-        console.log('[Dashboard] Raw balance result:', balanceResult);
-
-        // Convert from smallest unit (8 decimals for ZEC)
-        // Show up to 8 decimals but strip trailing zeros
-        const balanceStr = typeof balanceResult === 'string' ? balanceResult : String(balanceResult || '0');
-        const balanceNum = parseInt(balanceStr) / 100_000_000;
-        const balanceInZEC = balanceNum.toFixed(8).replace(/\.?0+$/, '');
-        setBalance(balanceInZEC);
-
-        console.log('[Dashboard] wZEC Balance:', balanceInZEC, 'wZEC');
-      } catch (error: any) {
-        console.error('[Dashboard] Error fetching balance:', error);
-        console.error('[Dashboard] Error details:', {
-          message: error.message,
-          name: error.name,
-          stack: error.stack
-        });
-
-        // Show helpful error message
-        if (error.message?.includes('does not exist')) {
-          console.warn('[Dashboard] wZEC token contract not deployed yet');
-          setBalance('N/A');
-        } else {
-          setBalance('0.00');
-        }
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    fetchBalance();
-  }, [companyData, viewFunction]);
-
-  // Handle fund success - refresh balance
-  const handleFundSuccess = async (amount: number, txid: string) => {
+  // Handlers - TanStack Query will auto-refresh the data
+  const handleFundSuccess = (amount: number, txid: string) => {
     console.log('[Dashboard] Fund success:', amount, 'ZEC, txid:', txid);
-    // Wait a bit for bridge-relayer to process, then refresh balance
-    setTimeout(async () => {
-      if (!companyData?.contractAddress) return;
+    // TanStack Query mutation will auto-invalidate and refetch balance
+  };
 
-      try {
-        const balanceResult = await viewFunction({
-          contractId: CONFIG.wzecToken,
-          method: 'ft_balance_of',
-          args: { account_id: companyData.contractAddress },
-        });
-        const balanceStr = typeof balanceResult === 'string' ? balanceResult : String(balanceResult || '0');
-        const balanceNum = parseInt(balanceStr) / 100_000_000;
-        const balanceInZEC = balanceNum.toFixed(8).replace(/\.?0+$/, '');
-        setBalance(balanceInZEC);
-      } catch (error) {
-        console.error('[Dashboard] Error refreshing balance:', error);
-      }
-    }, 5000); // Wait 5 seconds for bridge-relayer
+  const handleEmployeeAdded = (employee: { id: string; name: string; salary: string }) => {
+    console.log('[Dashboard] Employee added:', employee);
+    // TanStack Query mutation will auto-invalidate and refetch stats
   };
 
   return (
@@ -125,9 +51,9 @@ export default function CompanyDashboardPage() {
         <p className="text-muted-foreground">
           Manage your employees and process payroll with zero-knowledge privacy
         </p>
-        {companyData?.contractAddress && (
+        {contractAddress && (
           <p className="text-xs text-muted-foreground mt-2">
-            Contract: <span className="font-mono">{companyData.contractAddress}</span>
+            Contract: <span className="font-mono">{contractAddress}</span>
           </p>
         )}
       </div>
@@ -142,7 +68,13 @@ export default function CompanyDashboardPage() {
             <Users className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
+            <div className="text-2xl font-bold">
+              {isLoadingStats ? (
+                <span className="text-muted-foreground">Loading...</span>
+              ) : (
+                employeeCount
+              )}
+            </div>
             <p className="text-xs text-muted-foreground mt-1">
               Active employees on payroll
             </p>
@@ -157,9 +89,15 @@ export default function CompanyDashboardPage() {
             <Send className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
+            <div className="text-2xl font-bold">
+              {isLoadingStats ? (
+                <span className="text-muted-foreground">Loading...</span>
+              ) : (
+                totalPayments
+              )}
+            </div>
             <p className="text-xs text-muted-foreground mt-1">
-              Processed this month
+              Processed all time
             </p>
           </CardContent>
         </Card>
@@ -173,7 +111,7 @@ export default function CompanyDashboardPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {isLoading ? (
+              {isLoadingBalance ? (
                 <span className="text-muted-foreground">Loading...</span>
               ) : (
                 <>{balance} wZEC</>
@@ -338,30 +276,27 @@ export default function CompanyDashboardPage() {
       )}
 
       {/* Fund Account Dialog */}
-      {showFundDialog && companyData?.contractAddress && (
+      {showFundDialog && contractAddress && (
         <FundAccountDialog
-          companyId={companyData.contractAddress}
+          companyId={contractAddress}
           onSuccess={handleFundSuccess}
           onClose={() => setShowFundDialog(false)}
         />
       )}
 
       {/* Add Employee Dialog */}
-      {showAddEmployeeDialog && companyData?.contractAddress && (
+      {showAddEmployeeDialog && contractAddress && (
         <AddEmployeeDialog
-          companyId={companyData.contractAddress}
-          onSuccess={(employee) => {
-            console.log('[Dashboard] Employee added:', employee);
-            // Optionally refresh employee list
-          }}
+          companyId={contractAddress}
+          onSuccess={handleEmployeeAdded}
           onClose={() => setShowAddEmployeeDialog(false)}
         />
       )}
 
       {/* Recurring Payment Dialog */}
-      {showRecurringDialog && companyData?.contractAddress && (
+      {showRecurringDialog && contractAddress && (
         <RecurringPaymentDialog
-          companyId={companyData.contractAddress}
+          companyId={contractAddress}
           onSuccess={(config) => {
             console.log('[Dashboard] Recurring payment configured:', config);
           }}

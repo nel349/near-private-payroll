@@ -5,8 +5,10 @@ import '@near-wallet-selector/modal-ui/styles.css';
 
 import { HelloNearContract, NetworkId } from '@/config';
 import { WalletSelectorProvider } from '@near-wallet-selector/react-hook';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 
-import { ReactNode } from 'react';
+import { ReactNode, useState } from 'react';
 
 // Wallet setups
 import { setupMeteorWallet } from "@near-wallet-selector/meteor-wallet";
@@ -66,12 +68,26 @@ interface RootLayoutProps {
 }
 
 export default function RootLayout({ children }: RootLayoutProps) {
+  // Create a client instance per user session (using useState to persist across re-renders)
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 1000 * 10, // 10 seconds
+        refetchOnWindowFocus: false,
+        retry: 1,
+      },
+    },
+  }));
+
   return (
     <html lang="en">
       <body>
-        <WalletSelectorProvider config={walletSelectorConfig}>
-          {children}
-        </WalletSelectorProvider>
+        <QueryClientProvider client={queryClient}>
+          <WalletSelectorProvider config={walletSelectorConfig}>
+            {children}
+          </WalletSelectorProvider>
+          <ReactQueryDevtools initialIsOpen={false} />
+        </QueryClientProvider>
       </body>
     </html>
   );
