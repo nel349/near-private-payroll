@@ -253,15 +253,18 @@ export class BridgeRelayer {
     console.log(`  Receiver: ${deposit.receiverId}`);
     console.log(`  Confirmations: ${deposit.confirmations}`);
 
+    // Mark as processed immediately to prevent duplicate processing
+    // (in case next poll happens while minting is in progress)
+    this.state.markTxProcessed(deposit.txid);
+
     try {
       await this.near.mintForDeposit(deposit);
 
       console.log(`  ✅ Minted successfully!\n`);
-
-      // Mark as processed
-      this.state.markTxProcessed(deposit.txid);
     } catch (error: any) {
       console.error(`  ❌ Minting failed: ${error.message}\n`);
+      // Note: txid remains in processed list even if mint fails
+      // This prevents retry loops for permanently failing transactions
     }
   }
 

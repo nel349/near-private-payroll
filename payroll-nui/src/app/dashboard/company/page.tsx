@@ -1,23 +1,127 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Users, UserPlus, Wallet, Send } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useWalletSelector } from '@near-wallet-selector/react-hook';
+import { CONFIG } from '@/config/contracts';
+import { FundAccountDialog } from '@/components/fund-account-dialog';
 
 export default function CompanyDashboardPage() {
   const router = useRouter();
+  const { viewFunction } = useWalletSelector();
   const [activeTab, setActiveTab] = useState<'overview' | 'employees' | 'payments'>('overview');
+
+  // Company data and stats
+  const [companyData, setCompanyData] = useState<any>(null);
+  const [balance, setBalance] = useState<string>('0.00');
+  const [employeeCount, setEmployeeCount] = useState<number>(0);
+  const [isLoading, setIsLoading] = useState(true);
+  const [showFundDialog, setShowFundDialog] = useState(false);
+
+  // Load company data and fetch balance
+  useEffect(() => {
+    const loadCompanyData = () => {
+      const data = localStorage.getItem('company_data');
+      if (data) {
+        setCompanyData(JSON.parse(data));
+      }
+    };
+
+    loadCompanyData();
+  }, []);
+
+  // Fetch balance when company data is loaded
+  useEffect(() => {
+    const fetchBalance = async () => {
+      if (!companyData?.contractAddress) return;
+
+      try {
+        setIsLoading(true);
+
+        console.log('[Dashboard] Fetching balance for:', companyData.contractAddress);
+        console.log('[Dashboard] wZEC token contract:', CONFIG.wzecToken);
+
+        // Query wZEC balance of the payroll contract
+        const balanceResult = await viewFunction({
+          contractId: CONFIG.wzecToken,
+          method: 'ft_balance_of',
+          args: {
+            account_id: companyData.contractAddress,
+          },
+        });
+
+        console.log('[Dashboard] Raw balance result:', balanceResult);
+
+        // Convert from smallest unit (8 decimals for ZEC)
+        // Show up to 8 decimals but strip trailing zeros
+        const balanceNum = parseInt(balanceResult || '0') / 100_000_000;
+        const balanceInZEC = balanceNum.toFixed(8).replace(/\.?0+$/, '');
+        setBalance(balanceInZEC);
+
+        console.log('[Dashboard] wZEC Balance:', balanceInZEC, 'wZEC');
+      } catch (error: any) {
+        console.error('[Dashboard] Error fetching balance:', error);
+        console.error('[Dashboard] Error details:', {
+          message: error.message,
+          name: error.name,
+          stack: error.stack
+        });
+
+        // Show helpful error message
+        if (error.message?.includes('does not exist')) {
+          console.warn('[Dashboard] wZEC token contract not deployed yet');
+          setBalance('N/A');
+        } else {
+          setBalance('0.00');
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchBalance();
+  }, [companyData, viewFunction]);
+
+  // Handle fund success - refresh balance
+  const handleFundSuccess = async (amount: number, txid: string) => {
+    console.log('[Dashboard] Fund success:', amount, 'ZEC, txid:', txid);
+    // Wait a bit for bridge-relayer to process, then refresh balance
+    setTimeout(async () => {
+      if (!companyData?.contractAddress) return;
+
+      try {
+        const balanceResult = await viewFunction({
+          contractId: CONFIG.wzecToken,
+          method: 'ft_balance_of',
+          args: { account_id: companyData.contractAddress },
+        });
+        const balanceNum = parseInt(balanceResult || '0') / 100_000_000;
+        const balanceInZEC = balanceNum.toFixed(8).replace(/\.?0+$/, '');
+        setBalance(balanceInZEC);
+      } catch (error) {
+        console.error('[Dashboard] Error refreshing balance:', error);
+      }
+    }, 5000); // Wait 5 seconds for bridge-relayer
+  };
 
   return (
     <div className="container mx-auto px-6 py-8">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-4xl font-bold mb-2">Company Dashboard</h1>
+        <h1 className="text-4xl font-bold mb-2">
+          {companyData?.companyName || 'Company'} Dashboard
+        </h1>
         <p className="text-muted-foreground">
           Manage your employees and process payroll with zero-knowledge privacy
         </p>
+        {companyData?.contractAddress && (
+          <p className="text-xs text-muted-foreground mt-2">
+            Contract: <span className="font-mono">{companyData.contractAddress}</span>
+          </p>
+        )}
       </div>
 
       {/* Stats Cards */}
@@ -60,7 +164,13 @@ export default function CompanyDashboardPage() {
             <Wallet className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0.00 wZEC</div>
+            <div className="text-2xl font-bold">
+              {isLoading ? (
+                <span className="text-muted-foreground">Loading...</span>
+              ) : (
+                <>{balance} wZEC</>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground mt-1">
               Available for payroll
             </p>
@@ -156,6 +266,10 @@ export default function CompanyDashboardPage() {
               <CardTitle>Quick Actions</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              <Button className="w-full justify-start" onClick={() => setShowFundDialog(true)}>
+                <Wallet className="w-4 h-4 mr-2" />
+                Fund Account
+              </Button>
               <Button className="w-full justify-start" onClick={() => setActiveTab('employees')}>
                 <UserPlus className="w-4 h-4 mr-2" />
                 Add New Employee
@@ -209,6 +323,15 @@ export default function CompanyDashboardPage() {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {/* Fund Account Dialog */}
+      {showFundDialog && companyData?.contractAddress && (
+        <FundAccountDialog
+          companyId={companyData.contractAddress}
+          onSuccess={handleFundSuccess}
+          onClose={() => setShowFundDialog(false)}
+        />
       )}
     </div>
   );

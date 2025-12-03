@@ -100,7 +100,7 @@ export async function POST(request: NextRequest) {
     console.log(`  Memo: ${memoText}`);
 
     // Send ZEC to bridge custody address
-    const result = await rpcCall('z_sendmany', [
+    const opid = await rpcCall('z_sendmany', [
       fromAddr,
       [
         {
@@ -111,16 +111,35 @@ export async function POST(request: NextRequest) {
       ],
     ]);
 
-    let txid: string;
-    if (result.txids && result.txids.length > 0) {
-      txid = result.txids[0];
-    } else if (typeof result === 'string') {
-      txid = result;
-    } else {
-      txid = 'unknown';
+    console.log('[Bridge API] Operation started:', opid);
+    console.log('[Bridge API] Waiting for transaction to complete...');
+
+    // Poll operation status until complete (Zallet async operations)
+    let txid: string = 'unknown';
+    const maxRetries = 60; // 60 seconds timeout
+    for (let i = 0; i < maxRetries; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+
+      const status = await rpcCall('z_getoperationstatus', [[opid]]);
+
+      if (status && status.length > 0) {
+        const op = status[0];
+
+        if (op.status === 'success') {
+          txid = op.result?.txid || 'unknown';
+          console.log('[Bridge API] ✅ Transaction completed:', txid);
+          break;
+        } else if (op.status === 'failed') {
+          throw new Error(`Transaction failed: ${op.error?.message || 'Unknown error'}`);
+        }
+        // Otherwise status is 'executing', keep polling
+      }
     }
 
-    console.log('[Bridge API] ✅ ZEC transaction sent:', txid);
+    if (txid === 'unknown') {
+      throw new Error('Transaction timeout - operation did not complete in 60 seconds');
+    }
+
     console.log('[Bridge API] The bridge-relayer should detect this and mint wZEC');
 
     return NextResponse.json({
