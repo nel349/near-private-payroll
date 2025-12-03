@@ -230,3 +230,19 @@ export interface IntentsAdapterStats {
   totalWithdrawals: number;
   withdrawalNonce: number;
 }
+
+// ==================== DEFI FEATURES (NEAR INTENTS) ====================
+
+/** Auto-lend configuration for an employee */
+export interface AutoLendConfig {
+  /** Whether auto-lend is enabled */
+  enabled: boolean;
+  /** Percentage of salary to auto-lend (1-100) */
+  percentage: number;
+  /** Target lending protocol (e.g., 'aave', 'compound', 'solend') */
+  target_protocol: string;
+  /** Target chain for lending */
+  target_chain: DestinationChain;
+  /** Asset to lend as (e.g., 'nep141:usdc.token.near') */
+  target_asset: string;
+}

@@ -13,6 +13,7 @@ import {
   VerifiedIncomeProof,
   ContractStats,
   DestinationChain,
+  AutoLendConfig,
 } from './types';
 
 /** Contract methods interface */
@@ -61,6 +62,27 @@ interface PayrollContractMethods {
     public_params: number[];
     risc_zero_receipt: number[];
   }) => Promise<void>;
+  swap_balance: (
+    args: {
+      amount: string;
+      target_asset: string;
+      target_chain: DestinationChain;
+      min_output: string;
+      recipient: string | null;
+    },
+    gas?: number,
+    amount?: number
+  ) => Promise<void>;
+  set_poa_token: (args: { poa_token: string }) => Promise<void>;
+  set_near_intents_contract: (args: { near_intents: string }) => Promise<void>;
+  enable_auto_lend: (args: {
+    percentage: number;
+    target_protocol: string;
+    target_chain: DestinationChain;
+    target_asset: string;
+  }) => Promise<void>;
+  disable_auto_lend: () => Promise<void>;
+  withdraw_lent_funds: (args: { amount: string }, gas?: number, amount?: number) => Promise<void>;
 
   // View methods
   get_employee: (args: { employee_id: string }) => Promise<Employee | null>;
@@ -76,6 +98,10 @@ interface PayrollContractMethods {
     employee_id: string;
     proof_index: number;
   }) => Promise<boolean>;
+  get_poa_token: () => Promise<string | null>;
+  get_near_intents_contract: () => Promise<string | null>;
+  get_auto_lend_config: (args: { employee_id: string }) => Promise<AutoLendConfig | null>;
+  get_lent_balance: (args: { employee_id: string }) => Promise<string>;
 }
 
 /**
@@ -101,6 +127,10 @@ export class PrivatePayroll {
         'get_income_proof',
         'get_income_proof_count',
         'verify_income_proof_for_disclosure',
+        'get_poa_token',
+        'get_near_intents_contract',
+        'get_auto_lend_config',
+        'get_lent_balance',
       ],
       changeMethods: [
         'ft_on_transfer',
@@ -115,6 +145,12 @@ export class PrivatePayroll {
         'register_trusted_verifier',
         'remove_trusted_verifier',
         'submit_income_proof',
+        'swap_balance',
+        'set_poa_token',
+        'set_near_intents_contract',
+        'enable_auto_lend',
+        'disable_auto_lend',
+        'withdraw_lent_funds',
       ],
       useLocalViewExecution: false,
     }) as Contract & PayrollContractMethods;
@@ -309,6 +345,108 @@ export class PrivatePayroll {
     });
   }
 
+  // ==================== DEFI OPERATIONS (NEAR INTENTS) ====================
+
+  /**
+   * Swap employee balance to another asset on another chain
+   *
+   * This uses NEAR Intents to perform cross-chain swaps via intents.near protocol.
+   * Enables employees to convert their ZEC salary to other tokens automatically.
+   *
+   * @param amount - Amount of wZEC to swap (in smallest units, 8 decimals)
+   * @param targetAsset - Target asset (e.g., "nep141:usdc.token.near")
+   * @param targetChain - Target blockchain (Ethereum, Solana, etc.)
+   * @param minOutput - Minimum output amount (slippage protection)
+   * @param recipient - Optional recipient address (defaults to employee)
+   *
+   * @example
+   * // Swap 1 ZEC to USDC on Ethereum
+   * await payroll.swapBalance(
+   *   '100000000', // 1 ZEC
+   *   'nep141:usdc.token.near',
+   *   DestinationChain.Ethereum,
+   *   '2800000000', // Min 2800 USDC
+   *   null
+   * );
+   */
+  async swapBalance(
+    amount: string,
+    targetAsset: string,
+    targetChain: DestinationChain,
+    minOutput: string,
+    recipient: string | null = null
+  ): Promise<void> {
+    await this.contract.swap_balance(
+      {
+        amount,
+        target_asset: targetAsset,
+        target_chain: targetChain,
+        min_output: minOutput,
+        recipient,
+      },
+      300000000000000, // 300 TGas
+      1 // 1 yoctoNEAR deposit
+    );
+  }
+
+  /**
+   * Enable auto-lending of salary percentage to DeFi protocols
+   *
+   * When enabled, a percentage of each salary payment will automatically be
+   * deposited into lending protocols (Aave, Compound, Solend) to earn yield.
+   *
+   * @param percentage - Percentage of salary to auto-lend (1-100)
+   * @param targetProtocol - Lending protocol ('aave', 'compound', 'solend')
+   * @param targetChain - Chain where lending protocol is deployed
+   * @param targetAsset - Asset to lend as (e.g., 'nep141:usdc.token.near')
+   *
+   * @example
+   * // Auto-lend 30% of salary to Aave on Ethereum as USDC
+   * await payroll.enableAutoLend(
+   *   30,
+   *   'aave',
+   *   DestinationChain.Ethereum,
+   *   'nep141:usdc.token.near'
+   * );
+   */
+  async enableAutoLend(
+    percentage: number,
+    targetProtocol: string,
+    targetChain: DestinationChain,
+    targetAsset: string
+  ): Promise<void> {
+    await this.contract.enable_auto_lend({
+      percentage,
+      target_protocol: targetProtocol,
+      target_chain: targetChain,
+      target_asset: targetAsset,
+    });
+  }
+
+  /**
+   * Disable auto-lending
+   */
+  async disableAutoLend(): Promise<void> {
+    await this.contract.disable_auto_lend();
+  }
+
+  /**
+   * Withdraw funds from lending protocol back to available balance
+   *
+   * @param amount - Amount to withdraw from lending (in smallest units)
+   *
+   * @example
+   * // Withdraw 0.5 ZEC from lending
+   * await payroll.withdrawLentFunds('50000000');
+   */
+  async withdrawLentFunds(amount: string): Promise<void> {
+    await this.contract.withdraw_lent_funds(
+      { amount },
+      300000000000000, // 300 TGas
+      1 // 1 yoctoNEAR deposit
+    );
+  }
+
   // ==================== VIEW METHODS ====================
 
   /**
@@ -384,5 +522,63 @@ export class PrivatePayroll {
       employee_id: employeeId,
       proof_index: proofIndex,
     });
+  }
+
+  /**
+   * Get configured PoA Bridge token address
+   */
+  async getPoAToken(): Promise<string | null> {
+    return this.contract.get_poa_token();
+  }
+
+  /**
+   * Get configured NEAR Intents contract address
+   */
+  async getNearIntentsContract(): Promise<string | null> {
+    return this.contract.get_near_intents_contract();
+  }
+
+  /**
+   * Get auto-lend configuration for an employee
+   *
+   * @param employeeId - Employee's NEAR account ID
+   * @returns Auto-lend configuration or null if not configured
+   */
+  async getAutoLendConfig(employeeId: string): Promise<AutoLendConfig | null> {
+    return this.contract.get_auto_lend_config({ employee_id: employeeId });
+  }
+
+  /**
+   * Get lent balance for an employee (funds currently in lending protocols)
+   *
+   * @param employeeId - Employee's NEAR account ID
+   * @returns Lent balance as string
+   */
+  async getLentBalance(employeeId: string): Promise<string> {
+    return this.contract.get_lent_balance({ employee_id: employeeId });
+  }
+
+  // ==================== OWNER OPERATIONS (DEFI CONFIG) ====================
+
+  /**
+   * Set PoA Bridge token address (owner only)
+   *
+   * Configures the wrapped ZEC token address for PoA Bridge integration
+   *
+   * @param poaToken - PoA Bridge token contract address
+   */
+  async setPoAToken(poaToken: string): Promise<void> {
+    await this.contract.set_poa_token({ poa_token: poaToken });
+  }
+
+  /**
+   * Set NEAR Intents contract address (owner only)
+   *
+   * Configures the intents.near contract for cross-chain operations
+   *
+   * @param nearIntents - NEAR Intents contract address (typically 'intents.near')
+   */
+  async setNearIntentsContract(nearIntents: string): Promise<void> {
+    await this.contract.set_near_intents_contract({ near_intents: nearIntents });
   }
 }
