@@ -12,6 +12,7 @@ export default function EmployeeOnboardingPage() {
   const { signedAccountId, viewFunction } = useWalletSelector();
 
   const [contractAddress, setContractAddress] = useState('');
+  const [salary, setSalary] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -25,6 +26,11 @@ export default function EmployeeOnboardingPage() {
 
     if (!contractAddress.trim()) {
       setError('Please enter a company contract address');
+      return;
+    }
+
+    if (!salary.trim() || parseFloat(salary) <= 0) {
+      setError('Please enter your salary as provided by your employer');
       return;
     }
 
@@ -47,6 +53,9 @@ export default function EmployeeOnboardingPage() {
       }
 
       console.log('[EmployeeOnboarding] Employee found:', employee);
+
+      // Store salary locally for employee to use (for generating ZK proofs, etc.)
+      localStorage.setItem('employee_salary', salary.trim());
 
       // Try to get company name from contract stats (best effort)
       let companyName = 'Your Company';
@@ -144,6 +153,26 @@ export default function EmployeeOnboardingPage() {
               </p>
             </div>
 
+            {/* Salary Input */}
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Your Salary (wZEC) <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="number"
+                placeholder="0.05"
+                value={salary}
+                onChange={(e) => setSalary(e.target.value)}
+                disabled={isVerifying || success}
+                className="w-full px-3 py-2 rounded-lg border border-border bg-background"
+                step="0.001"
+                min="0"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Ask your employer for your salary amount
+              </p>
+            </div>
+
             {/* Error Alert */}
             {error && (
               <div className="p-4 rounded-lg border border-red-500/20 bg-red-500/10 text-red-500 text-sm">
@@ -172,7 +201,7 @@ export default function EmployeeOnboardingPage() {
             <Button
               className="w-full"
               onClick={handleVerify}
-              disabled={isVerifying || success || !contractAddress.trim()}
+              disabled={isVerifying || success || !contractAddress.trim() || !salary.trim()}
             >
               {isVerifying && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               {!isVerifying && !success && <Building className="w-4 h-4 mr-2" />}
@@ -192,12 +221,12 @@ export default function EmployeeOnboardingPage() {
             {/* Info Box */}
             <div className="p-4 rounded-lg border border-primary/20 bg-primary/5">
               <p className="font-semibold text-sm text-primary mb-2">
-                How to get the contract address?
+                How to join?
               </p>
               <ol className="space-y-1 text-sm text-muted-foreground">
                 <li>1. Contact your employer (HR or payroll admin)</li>
-                <li>2. They will provide the company contract address</li>
-                <li>3. Paste it above and click "Verify & Join"</li>
+                <li>2. They will provide the company contract address and your salary</li>
+                <li>3. Enter both above and click "Verify & Join"</li>
               </ol>
             </div>
           </CardContent>

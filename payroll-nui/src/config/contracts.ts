@@ -35,11 +35,11 @@ export const TESTNET_CONFIG: NetworkConfig = {
   helperUrl: 'https://helper.testnet.near.org',
   explorerUrl: 'https://testnet.nearblocks.io',
 
-  // TODO: Deploy these contracts to testnet
+  // Deployed contracts on testnet
   wzecToken: 'wzec.nel349.testnet',
   zkVerifier: 'verifier.nel349.testnet',
-  payrollFactory: 'payroll-factory.nel349.testnet',  // Factory for deploying company contracts
-  intentsAdapter: 'intents.nel349.testnet', // NEAR Intents adapter for non-custodial cross-chain
+  payrollFactory: 'payroll-factory.testnet',  // Factory for deploying company contracts
+  intentsAdapter: 'intents.testnet', // NEAR Intents adapter for non-custodial cross-chain
   poaToken: undefined, // Optional: for NEAR Intents (mainnet only)
   nearIntents: undefined, // Optional: for DeFi features (mainnet only)
 

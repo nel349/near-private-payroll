@@ -157,14 +157,24 @@ export default function CompanyQuickStartPage() {
 
       console.log('[QuickStart] Adding employee:', employeeName);
 
-      // Generate encryption key pair (placeholder for development)
-      const publicKey = generateBlinding(); // Using random bytes as placeholder public key
+      // Load company's public key from localStorage
+      const keypairData = localStorage.getItem('company_keypair');
+      if (!keypairData) {
+        throw new Error('Company keypair not found. Please complete company onboarding first.');
+      }
 
-      // Encrypt employee data
+      const keypair = JSON.parse(keypairData);
+      const companyPublicKey = new Uint8Array(keypair.publicKey);
+
+      console.log('[QuickStart] Loaded company public key, length:', companyPublicKey.length);
+
+      // Encrypt employee name with company's public key
       const nameBytes = new TextEncoder().encode(employeeName.trim());
+      const encryptedNameBytes = await encryptWithPublicKey(nameBytes, companyPublicKey);
+
+      // Store salary as plaintext (company knows salary, commitment provides privacy)
       const salaryBytes = new TextEncoder().encode(baseSalary.trim());
-      const encryptedNameBytes = await encryptWithPublicKey(nameBytes, publicKey);
-      const encryptedSalaryBytes = await encryptWithPublicKey(salaryBytes, publicKey);
+      const encryptedSalaryBytes = salaryBytes; // Not encrypted, just stored as bytes
       const encrypted_name = Array.from(encryptedNameBytes);
       const encrypted_salary = Array.from(encryptedSalaryBytes);
 
@@ -185,7 +195,7 @@ export default function CompanyQuickStartPage() {
           encrypted_name,
           encrypted_salary,
           salary_commitment,
-          public_key: Array.from(publicKey),
+          employee_public_key: [], // No longer needed with simplified encryption model
         },
         gas: '50000000000000', // 50 TGas
         deposit: '0', // No deposit required

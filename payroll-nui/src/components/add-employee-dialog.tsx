@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, UserPlus, X } from 'lucide-react';
+import { Loader2, UserPlus, X, CheckCircle } from 'lucide-react';
 import { generateBlinding, generateSalaryCommitment, encryptWithPublicKey } from '@near-private-payroll/sdk';
 import { useAddEmployee, useCompanyPublicKey } from '@/lib/hooks/use-payroll-queries';
 
@@ -24,6 +24,15 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
+  const handleReset = () => {
+    setEmployeeName('');
+    setEmployeeWallet('');
+    setBaseSalary('');
+    setEmployeeRole('');
+    setSuccess(false);
+    setError(null);
+  };
+
   const handleAddEmployee = async () => {
     setError(null);
     setSuccess(false);
@@ -43,28 +52,22 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
 
       console.log('[AddEmployee] Adding employee:', employeeName);
 
-      // Generate employee's RSA keypair for encrypting their salary
-      // In production, this would be the employee's actual public key
-      const { generateRSAKeypair } = await import('@near-private-payroll/sdk');
-      const employeeKeypair = await generateRSAKeypair();
-
       // Encrypt name with COMPANY's public key (so company can decrypt for UI)
       const nameBytes = new TextEncoder().encode(employeeName.trim());
       const encryptedNameBytes = await encryptWithPublicKey(nameBytes, companyPublicKey);
       const encrypted_name = Array.from(encryptedNameBytes);
 
-      // Encrypt salary with EMPLOYEE's public key (so only employee can decrypt)
+      // Store salary as plaintext bytes (company knows salary, commitment provides on-chain privacy)
       const salaryBytes = new TextEncoder().encode(baseSalary.trim());
-      const encryptedSalaryBytes = await encryptWithPublicKey(salaryBytes, employeeKeypair.publicKey);
-      const encrypted_salary = Array.from(encryptedSalaryBytes);
+      const encrypted_salary = Array.from(salaryBytes);
 
-      // Generate salary commitment
+      // Generate salary commitment for on-chain privacy
       const salaryValue = BigInt(baseSalary.trim());
       const blinding = generateBlinding();
       const commitment = generateSalaryCommitment(salaryValue, blinding);
       const salary_commitment = Array.from(commitment.value);
 
-      console.log('[AddEmployee] Name encrypted with company key, salary with employee key');
+      console.log('[AddEmployee] Name encrypted, salary commitment generated');
       console.log('[AddEmployee] Calling contract...');
 
       // Add employee using TanStack Query mutation
@@ -74,7 +77,7 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
         encrypted_name,
         encrypted_salary,
         salary_commitment,
-        employee_public_key: Array.from(employeeKeypair.publicKey),
+        employee_public_key: [], // No longer needed
       });
 
       console.log('[AddEmployee] Employee added successfully');
@@ -89,13 +92,9 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
         });
       }
 
-      // Reset form
+      // Reset form after success
       setTimeout(() => {
-        setEmployeeName('');
-        setEmployeeWallet('');
-        setBaseSalary('');
-        setEmployeeRole('');
-        setSuccess(false);
+        handleReset();
       }, 2000);
     } catch (err) {
       console.error('[AddEmployee] Error adding employee:', err);
@@ -139,10 +138,15 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
           {/* Success Message */}
           {success && (
             <div className="p-4 rounded-lg border border-green-500/20 bg-green-500/10 text-green-500 text-sm">
-              <p className="font-semibold mb-1">✅ Employee Added!</p>
-              <p className="text-xs">
-                {employeeName} has been added to your payroll.
-              </p>
+              <div className="flex items-start gap-2">
+                <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold mb-1">Employee Added Successfully!</p>
+                  <p className="text-xs">
+                    {employeeName} has been added to your payroll. Share the company contract address ({companyId}) and their salary with them so they can access their payroll data.
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 
@@ -154,59 +158,64 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
           )}
 
           {/* Form */}
-          <div>
-            <label className="block text-sm font-medium mb-2">Employee Name</label>
-            <input
-              type="text"
-              value={employeeName}
-              onChange={(e) => setEmployeeName(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-border bg-background"
-              disabled={addEmployeeMutation.isPending || success}
-              placeholder="John Doe"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">Wallet Address</label>
-            <input
-              type="text"
-              value={employeeWallet}
-              onChange={(e) => setEmployeeWallet(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-border bg-background font-mono text-sm"
-              placeholder="employee.near"
-              disabled={addEmployeeMutation.isPending || success}
-            />
-            <p className="text-xs text-muted-foreground mt-1">The employee's NEAR account</p>
-          </div>
-
-          <div className="grid md:grid-cols-2 gap-4">
+          {!success && (
+          <>
             <div>
-              <label className="block text-sm font-medium mb-2">Base Salary (wZEC)</label>
-              <input
-                type="number"
-                value={baseSalary}
-                onChange={(e) => setBaseSalary(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-border bg-background"
-                disabled={addEmployeeMutation.isPending || success}
-                step="0.001"
-                min="0"
-                placeholder="0.05"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-2">Role (Optional)</label>
+              <label className="block text-sm font-medium mb-2">Employee Name</label>
               <input
                 type="text"
-                value={employeeRole}
-                onChange={(e) => setEmployeeRole(e.target.value)}
+                value={employeeName}
+                onChange={(e) => setEmployeeName(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-border bg-background"
                 disabled={addEmployeeMutation.isPending || success}
-                placeholder="Developer"
+                placeholder="John Doe"
               />
             </div>
-          </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-2">Wallet Address</label>
+              <input
+                type="text"
+                value={employeeWallet}
+                onChange={(e) => setEmployeeWallet(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-border bg-background font-mono text-sm"
+                placeholder="employee.near"
+                disabled={addEmployeeMutation.isPending || success}
+              />
+              <p className="text-xs text-muted-foreground mt-1">The employee's NEAR account</p>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Base Salary (wZEC)</label>
+                <input
+                  type="number"
+                  value={baseSalary}
+                  onChange={(e) => setBaseSalary(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-border bg-background"
+                  disabled={addEmployeeMutation.isPending || success}
+                  step="0.001"
+                  min="0"
+                  placeholder="0.05"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">Role (Optional)</label>
+                <input
+                  type="text"
+                  value={employeeRole}
+                  onChange={(e) => setEmployeeRole(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-border bg-background"
+                  disabled={addEmployeeMutation.isPending || success}
+                  placeholder="Developer"
+                />
+              </div>
+            </div>
+          </>
+          )}
 
           {/* Actions */}
+          {!success && (
           <div className="flex gap-3 pt-4">
             {onClose && (
               <Button
@@ -224,9 +233,10 @@ export function AddEmployeeDialog({ companyId, onSuccess, onClose }: AddEmployee
               disabled={addEmployeeMutation.isPending || success || !employeeName || !employeeWallet || !baseSalary || isLoadingPublicKey}
             >
               {(addEmployeeMutation.isPending || isLoadingPublicKey) && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {addEmployeeMutation.isPending ? 'Adding...' : isLoadingPublicKey ? 'Loading...' : success ? 'Added!' : 'Add Employee'}
+              {addEmployeeMutation.isPending ? 'Adding...' : isLoadingPublicKey ? 'Loading...' : 'Add Employee'}
             </Button>
           </div>
+          )}
         </CardContent>
       </Card>
     </div>

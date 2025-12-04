@@ -5,8 +5,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2, Send, X, AlertCircle, Users } from 'lucide-react';
 import { usePayEmployee, useCompanyEmployees } from '@/lib/hooks/use-payroll-queries';
-import { useEncryptedKeypair } from '@/lib/hooks/use-encrypted-keypair';
-import { PasswordPromptDialog } from '@/components/password-prompt-dialog';
 
 interface PayEmployeeDialogProps {
   companyId: string;
@@ -27,14 +25,19 @@ export function PayEmployeeDialog({
 }: PayEmployeeDialogProps) {
   const payEmployeeMutation = usePayEmployee();
 
-  // Encrypted keypair management
-  const {
-    keypair,
-    showPasswordPrompt,
-    handlePasswordSubmit,
-    handleCancel,
-    getKeypair,
-  } = useEncryptedKeypair('company_keypair');
+  // Load company keypair from localStorage (unencrypted)
+  const [keypair, setKeypair] = useState<{ privateKey: number[]; publicKey: number[] } | null>(null);
+
+  useEffect(() => {
+    const keypairData = localStorage.getItem('company_keypair');
+    if (keypairData) {
+      try {
+        setKeypair(JSON.parse(keypairData));
+      } catch (err) {
+        console.error('[PayEmployee] Failed to load keypair:', err);
+      }
+    }
+  }, []);
 
   // Fetch employees with decrypted names
   const { data: employees, isLoading: isLoadingEmployees } = useCompanyEmployees(
@@ -50,13 +53,6 @@ export function PayEmployeeDialog({
 
   // Get selected employee details
   const selectedEmployee = employees?.find(emp => emp.id === employeeId);
-
-  // Try to get keypair on mount
-  useEffect(() => {
-    getKeypair().catch(() => {
-      // Ignore error, password prompt will show
-    });
-  }, [getKeypair]);
 
   const handlePayEmployee = async () => {
     setError(null);
@@ -278,17 +274,6 @@ export function PayEmployeeDialog({
           </div>
         </CardContent>
       </Card>
-
-      {/* Password Prompt Dialog */}
-      {showPasswordPrompt && (
-        <PasswordPromptDialog
-          title="Unlock Company Keys"
-          description="Enter your password to decrypt employee names"
-          onSubmit={handlePasswordSubmit}
-          onCancel={handleCancel}
-          submitLabel="Unlock"
-        />
-      )}
     </div>
   );
 }
