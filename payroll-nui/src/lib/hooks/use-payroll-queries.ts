@@ -510,11 +510,10 @@ export function usePayEmployee() {
       const blinding = generateBlinding();
       const commitment = generateSalaryCommitment(amountValue, blinding);
 
-      // Encrypt payment amount
+      // Store payment amount as plaintext bytes (company knows payment amounts)
+      // Commitment provides on-chain privacy from public observers
       const amountBytes = new TextEncoder().encode(params.paymentAmount);
-      const publicKey = generateBlinding(); // Placeholder: use employee's public key
-      const encryptedAmountBytes = await encryptWithPublicKey(amountBytes, publicKey);
-      const encrypted_amount = Array.from(encryptedAmountBytes);
+      const encrypted_amount = Array.from(amountBytes);
 
       // TODO: Generate real ZK proof via proof server
       // For now, use placeholder proof (will fail verification if contract checks are enabled)
