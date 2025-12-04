@@ -1,15 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Users, UserPlus, Wallet, Send, Calendar } from 'lucide-react';
+import { Users, UserPlus, Wallet, Send, Calendar, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { FundAccountDialog } from '@/components/fund-account-dialog';
 import { AddEmployeeDialog } from '@/components/add-employee-dialog';
 import { RecurringPaymentDialog } from '@/components/recurring-payment-dialog';
 import { PayEmployeeDialog } from '@/components/pay-employee-dialog';
-import { useCompanyDashboard } from '@/lib/hooks/use-payroll-queries';
+import { useCompanyDashboard, useCompanyEmployees } from '@/lib/hooks/use-payroll-queries';
 
 export default function CompanyDashboardPage() {
   const router = useRouter();
@@ -26,11 +26,32 @@ export default function CompanyDashboardPage() {
     isLoadingStats,
   } = useCompanyDashboard();
 
+  // Load company keypair for decrypting employee names
+  const [keypair, setKeypair] = useState<{ privateKey: number[]; publicKey: number[] } | null>(null);
+
+  useEffect(() => {
+    const keypairData = localStorage.getItem('company_keypair');
+    if (keypairData) {
+      try {
+        setKeypair(JSON.parse(keypairData));
+      } catch (err) {
+        console.error('[CompanyDashboard] Failed to load keypair:', err);
+      }
+    }
+  }, []);
+
+  // Fetch employees with decrypted names and salaries
+  const { data: employees, isLoading: isLoadingEmployees } = useCompanyEmployees(
+    contractAddress,
+    keypair
+  );
+
   // Dialog states
   const [showFundDialog, setShowFundDialog] = useState(false);
   const [showAddEmployeeDialog, setShowAddEmployeeDialog] = useState(false);
   const [showRecurringDialog, setShowRecurringDialog] = useState(false);
   const [showPayEmployeeDialog, setShowPayEmployeeDialog] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<{ id: string; name: string; salary: string } | null>(null);
 
   // Handlers - TanStack Query will auto-refresh the data
   const handleFundSuccess = (amount: number, txid: string) => {
@@ -238,21 +259,82 @@ export default function CompanyDashboardPage() {
       {activeTab === 'employees' && (
         <div>
           <Card>
-            <CardHeader>
-              <CardTitle>Employee Management</CardTitle>
-              <CardDescription>
-                Add and manage employees on your private payroll
-              </CardDescription>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle>Employee Management</CardTitle>
+                <CardDescription>
+                  Add and manage employees on your private payroll
+                </CardDescription>
+              </div>
+              <Button onClick={() => setShowAddEmployeeDialog(true)}>
+                <UserPlus className="w-4 h-4 mr-2" />
+                Add Employee
+              </Button>
             </CardHeader>
             <CardContent>
-              <div className="text-center py-12 text-muted-foreground">
-                <Users className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p className="mb-4">No employees added yet</p>
-                <Button>
-                  <UserPlus className="w-4 h-4 mr-2" />
-                  Add First Employee
-                </Button>
-              </div>
+              {isLoadingEmployees ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+                  <span className="ml-3 text-muted-foreground">Loading employees...</span>
+                </div>
+              ) : employees && employees.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-border">
+                        <th className="text-left py-3 px-4 font-medium text-sm text-muted-foreground">Name</th>
+                        <th className="text-left py-3 px-4 font-medium text-sm text-muted-foreground">Wallet Address</th>
+                        <th className="text-left py-3 px-4 font-medium text-sm text-muted-foreground">Salary (wZEC)</th>
+                        <th className="text-left py-3 px-4 font-medium text-sm text-muted-foreground">Status</th>
+                        <th className="text-right py-3 px-4 font-medium text-sm text-muted-foreground">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {employees.map((employee) => (
+                        <tr key={employee.id} className="border-b border-border hover:bg-muted/50">
+                          <td className="py-3 px-4 font-medium">{employee.name}</td>
+                          <td className="py-3 px-4 font-mono text-sm text-muted-foreground">{employee.id}</td>
+                          <td className="py-3 px-4">{employee.salary}</td>
+                          <td className="py-3 px-4">
+                            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                              employee.status === 'Active'
+                                ? 'bg-green-500/10 text-green-500'
+                                : 'bg-gray-500/10 text-gray-500'
+                            }`}>
+                              {employee.status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                setSelectedEmployee({
+                                  id: employee.id,
+                                  name: employee.name,
+                                  salary: employee.salary
+                                });
+                                setShowPayEmployeeDialog(true);
+                              }}
+                            >
+                              <Send className="w-4 h-4 mr-2" />
+                              Pay
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-12 text-muted-foreground">
+                  <Users className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p className="mb-4">No employees added yet</p>
+                  <Button onClick={() => setShowAddEmployeeDialog(true)}>
+                    <UserPlus className="w-4 h-4 mr-2" />
+                    Add First Employee
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -310,11 +392,18 @@ export default function CompanyDashboardPage() {
       {showPayEmployeeDialog && contractAddress && (
         <PayEmployeeDialog
           companyId={contractAddress}
+          employeeId={selectedEmployee?.id}
+          employeeName={selectedEmployee?.name}
+          suggestedAmount={selectedEmployee?.salary}
           onSuccess={(payment) => {
             console.log('[Dashboard] Payment processed:', payment);
+            setSelectedEmployee(null);
             // TanStack Query mutation will auto-invalidate and refetch data
           }}
-          onClose={() => setShowPayEmployeeDialog(false)}
+          onClose={() => {
+            setShowPayEmployeeDialog(false);
+            setSelectedEmployee(null);
+          }}
         />
       )}
     </div>

@@ -42,7 +42,7 @@ export default function EmployeeOnboardingPage() {
       console.log(`[EmployeeOnboarding] Verifying employment at ${contractAddress}...`);
 
       // Call the contract to verify employee exists (view method)
-      const employee = await viewFunction({
+      const employee: any = await viewFunction({
         contractId: contractAddress.trim(),
         method: 'get_employee',
         args: { employee_id: signedAccountId },
@@ -53,6 +53,27 @@ export default function EmployeeOnboardingPage() {
       }
 
       console.log('[EmployeeOnboarding] Employee found:', employee);
+
+      // Verify the salary matches what's in the contract
+      if (employee.encrypted_salary) {
+        // Salary is stored as plaintext bytes (not actually encrypted)
+        const contractSalaryBytes = new Uint8Array(employee.encrypted_salary);
+        const contractSalary = new TextDecoder().decode(contractSalaryBytes);
+
+        console.log('[EmployeeOnboarding] Contract salary:', contractSalary);
+        console.log('[EmployeeOnboarding] Entered salary:', salary.trim());
+
+        if (contractSalary !== salary.trim()) {
+          throw new Error(
+            `Salary mismatch! You entered ${salary.trim()} wZEC, but the contract has ${contractSalary} wZEC. ` +
+            'Please contact your employer to confirm your correct salary.'
+          );
+        }
+
+        console.log('[EmployeeOnboarding] Salary verified successfully!');
+      } else {
+        throw new Error('No salary found in contract. Please contact your employer.');
+      }
 
       // Store salary locally for employee to use (for generating ZK proofs, etc.)
       localStorage.setItem('employee_salary', salary.trim());
@@ -97,6 +118,8 @@ export default function EmployeeOnboardingPage() {
         setError('You are not registered as an employee at this company. Please contact your employer.');
       } else if (errorMessage.includes('does not exist') || errorMessage.includes('contract')) {
         setError('Invalid contract address. Please check the address and try again.');
+      } else if (errorMessage.includes('Salary mismatch')) {
+        setError(errorMessage); // Show the detailed mismatch error
       } else {
         setError(errorMessage);
       }

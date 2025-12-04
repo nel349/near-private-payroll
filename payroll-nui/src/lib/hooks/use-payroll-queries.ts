@@ -190,9 +190,32 @@ export function useCompanyEmployees(
               );
             }
 
+            // Fetch full employee details to get salary
+            let salary = "Unknown";
+            try {
+              const employeeDetails: any = await viewFunction({
+                contractId: contractAddress,
+                method: "get_employee",
+                args: { employee_id: employeeId },
+              });
+
+              if (employeeDetails && employeeDetails.encrypted_salary) {
+                // Salary is stored as plaintext bytes (not encrypted)
+                const salaryBytes = new Uint8Array(employeeDetails.encrypted_salary);
+                salary = new TextDecoder().decode(salaryBytes);
+              }
+            } catch (error) {
+              console.warn(
+                "[useCompanyEmployees] Failed to fetch salary for:",
+                employeeId,
+                error
+              );
+            }
+
             return {
               id: employeeId,
               name,
+              salary,
               encryptedName: emp[1],
               status,
             };
