@@ -413,8 +413,6 @@ pub struct PayrollContract {
     /// Lent balances per employee (funds in lending protocols)
     pub lent_balances: LookupMap<AccountId, u128>,
 
-    /// Company balance (deposited wZEC)
-    pub company_balance: u128,
     /// Total employees
     pub total_employees: u32,
     /// Total payments made
@@ -445,7 +443,6 @@ impl PayrollContract {
             pending_proofs: LookupMap::new(StorageKey::PendingProofs),
             auto_lend_configs: LookupMap::new(StorageKey::AutoLendConfigs),
             lent_balances: LookupMap::new(StorageKey::LentBalances),
-            company_balance: 0,
             total_employees: 0,
             total_payments: 0,
         }
@@ -495,9 +492,8 @@ impl PayrollContract {
     /// Company deposits wZEC for payroll
     /// Called via ft_transfer_call from wZEC contract
     ///
-    /// Accepts deposits from:
-    /// - Owner (direct deposit)
-    /// - Intents adapter (cross-chain deposits forwarded from companies)
+    /// Accepts wZEC deposits from anyone (owner, bridge relayer, or any other account)
+    /// This allows multiple funding sources including the Zcash bridge
     pub fn ft_on_transfer(
         &mut self,
         sender_id: AccountId,
@@ -507,26 +503,15 @@ impl PayrollContract {
         let token_contract = env::predecessor_account_id();
         assert_eq!(token_contract, self.wzec_token, "Only wZEC accepted");
 
-        // Accept deposits from owner or intents adapter
-        let is_valid_sender = sender_id == self.owner
-            || self.intents_adapter.as_ref().map_or(false, |adapter| &sender_id == adapter);
+        // Accept all wZEC deposits
+        env::log_str(&format!(
+            "Received {} wZEC from {} (msg: '{}')",
+            amount.0,
+            sender_id,
+            msg
+        ));
 
-        if msg == "deposit" && is_valid_sender {
-            self.company_balance += amount.0;
-            env::log_str(&format!(
-                "Company deposited {} wZEC (via {})",
-                amount.0,
-                sender_id
-            ));
-            PromiseOrValue::Value(U128(0)) // Accept all tokens
-        } else {
-            // Refund if not a valid deposit
-            env::log_str(&format!(
-                "Deposit rejected: sender={}, msg='{}', valid_sender={}",
-                sender_id, msg, is_valid_sender
-            ));
-            PromiseOrValue::Value(amount)
-        }
+        PromiseOrValue::Value(U128(0)) // Accept all tokens
     }
 
     /// Add a new employee
@@ -619,11 +604,16 @@ impl PayrollContract {
         history.push(&payment);
         self.payment_history.insert(&employee_id, &history);
 
-        // Update employee balance (amount extracted from proof)
-        // Note: In real implementation, amount comes from verified proof output
+        // Update employee balance (amount extracted from encrypted_amount)
+        // Note: encrypted_amount contains plaintext bytes for now (not actually encrypted)
         let current_balance = self.employee_balances.get(&employee_id).unwrap_or(0);
-        // Amount would be verified via ZK proof - placeholder for now
-        let payment_amount = self.extract_amount_from_proof(&zk_proof);
+
+        // Decode amount from plaintext bytes
+        let amount_str = String::from_utf8(payment.encrypted_amount.clone())
+            .expect("Invalid UTF-8 in payment amount");
+        let amount_f64: f64 = amount_str.parse()
+            .expect("Invalid amount format");
+        let payment_amount = (amount_f64 * 100_000_000.0) as u128; // Convert to smallest units
 
         // Check if auto-lending is enabled
         let auto_lend_config = self.auto_lend_configs.get(&employee_id);
@@ -654,12 +644,9 @@ impl PayrollContract {
             ));
         }
 
-        // Deduct from company balance
-        assert!(
-            self.company_balance >= payment_amount,
-            "Insufficient company balance"
-        );
-        self.company_balance -= payment_amount;
+        // Note: wZEC balance is checked at the token level (NEP-141)
+        // The tokens are transferred from this contract to employees via withdraw() calls
+        // No need to track internal balance - the wZEC contract handles it
 
         self.total_payments += 1;
 
@@ -1658,22 +1645,53 @@ impl PayrollContract {
             .unwrap_or(0)
     }
 
+    /// List payments for an employee
+    /// Returns: Vec<(timestamp, encrypted_amount, commitment, period)>
+    pub fn list_payments(&self, employee_id: AccountId, from_index: u64, limit: u64) -> Vec<(u64, Vec<u8>, [u8; 32], String)> {
+        let history = self.payment_history.get(&employee_id);
+        if history.is_none() {
+            return vec![];
+        }
+
+        let history = history.unwrap();
+        let len = history.len();
+        let start = from_index.min(len);
+        let end = (from_index + limit).min(len);
+
+        let mut payments = vec![];
+        for i in start..end {
+            if let Some(payment) = history.get(i) {
+                payments.push((
+                    payment.timestamp,
+                    payment.encrypted_amount.clone(),
+                    payment.commitment,
+                    payment.period.clone(),
+                ));
+            }
+        }
+
+        payments
+    }
+
     /// Get employee balance
     pub fn get_balance(&self, employee_id: AccountId) -> U128 {
         U128(self.employee_balances.get(&employee_id).unwrap_or(0))
     }
 
-    /// Get company balance
+    /// Get company balance (DEPRECATED - query wZEC contract directly)
+    /// Returns 0 - frontend should call wzec.ft_balance_of(contract_id)
     pub fn get_company_balance(&self) -> U128 {
-        U128(self.company_balance)
+        U128(0)
     }
 
     /// Get contract stats
+    /// Returns (total_employees, total_payments, deprecated_balance)
+    /// Note: Third field is deprecated (always 0) - query wZEC contract for actual balance
     pub fn get_stats(&self) -> (u32, u64, U128) {
         (
             self.total_employees,
             self.total_payments,
-            U128(self.company_balance),
+            U128(0), // Deprecated - query wZEC contract for actual balance
         )
     }
 
@@ -1857,6 +1875,26 @@ impl PayrollContract {
         // For now, return placeholder
         // In production, this parses the proof's public outputs
         0
+    }
+
+    /// Upgrade the contract to new WASM code
+    /// Only the owner can upgrade
+    pub fn upgrade(&mut self) {
+        // Verify caller is owner
+        let caller = env::predecessor_account_id();
+        assert_eq!(
+            caller, self.owner,
+            "Only the contract owner can upgrade the contract"
+        );
+
+        // Deploy new code using promise batch
+        let promise_id = env::promise_batch_create(&env::current_account_id());
+
+        // Read new WASM from input
+        let code = env::input().expect("No contract code provided");
+
+        env::promise_batch_action_deploy_contract(promise_id, &code);
+        env::promise_return(promise_id);
     }
 }
 

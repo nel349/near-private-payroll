@@ -9,7 +9,7 @@ import { FundAccountDialog } from '@/components/fund-account-dialog';
 import { AddEmployeeDialog } from '@/components/add-employee-dialog';
 import { RecurringPaymentDialog } from '@/components/recurring-payment-dialog';
 import { PayEmployeeDialog } from '@/components/pay-employee-dialog';
-import { useCompanyDashboard, useCompanyEmployees } from '@/lib/hooks/use-payroll-queries';
+import { useCompanyDashboard, useCompanyEmployees, useCompanyPayments } from '@/lib/hooks/use-payroll-queries';
 
 export default function CompanyDashboardPage() {
   const router = useRouter();
@@ -45,6 +45,9 @@ export default function CompanyDashboardPage() {
     contractAddress,
     keypair
   );
+
+  // Fetch all company payments
+  const { data: payments, isLoading: isLoadingPayments } = useCompanyPayments(contractAddress);
 
   // Dialog states
   const [showFundDialog, setShowFundDialog] = useState(false);
@@ -177,7 +180,7 @@ export default function CompanyDashboardPage() {
               : 'text-muted-foreground hover:text-foreground'
           }`}
         >
-          Process Payment
+          Payment History
         </button>
       </div>
 
@@ -344,16 +347,55 @@ export default function CompanyDashboardPage() {
         <div>
           <Card>
             <CardHeader>
-              <CardTitle>Process Payroll</CardTitle>
+              <CardTitle>Payment History</CardTitle>
               <CardDescription>
-                Pay your employees with zero-knowledge proof verification
+                View all salary payments processed by your company
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-center py-12 text-muted-foreground">
-                <Send className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>Add employees first to process payments</p>
-              </div>
+              {isLoadingPayments ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+                  <span className="ml-3 text-muted-foreground">Loading payment history...</span>
+                </div>
+              ) : payments && payments.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-border">
+                        <th className="text-left py-3 px-4 font-medium text-sm text-muted-foreground">Date</th>
+                        <th className="text-left py-3 px-4 font-medium text-sm text-muted-foreground">Employee</th>
+                        <th className="text-left py-3 px-4 font-medium text-sm text-muted-foreground">Period</th>
+                        <th className="text-right py-3 px-4 font-medium text-sm text-muted-foreground">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {payments.map((payment, index) => (
+                        <tr key={index} className="border-b border-border hover:bg-muted/50">
+                          <td className="py-3 px-4 text-sm text-muted-foreground">
+                            {new Date(payment.timestamp / 1000000).toLocaleDateString()}
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="font-mono text-sm">{payment.employeeId}</div>
+                          </td>
+                          <td className="py-3 px-4 text-sm">{payment.period}</td>
+                          <td className="py-3 px-4 text-right font-medium">{payment.amount} wZEC</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  <div className="mt-4 p-3 rounded-lg bg-muted/30 text-xs text-muted-foreground">
+                    Total: {payments.length} payment{payments.length !== 1 ? 's' : ''}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12 text-muted-foreground">
+                  <Send className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p className="mb-4">No payments processed yet</p>
+                  <p className="text-xs">Start processing payroll from the Employees tab</p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

@@ -228,10 +228,32 @@ export default function EmployeeDashboardPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-center py-12 text-muted-foreground">
-                <History className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>No payments received yet</p>
-              </div>
+              {paymentCount > 0 ? (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-lg border border-blue-500/20 bg-blue-500/5">
+                    <p className="text-sm mb-2">
+                      <strong>You have {paymentCount} payment(s)</strong>
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Payment history details require a contract method to be added.
+                      Currently only payment count is available from the contract.
+                    </p>
+                  </div>
+
+                  <div className="text-center py-8 text-muted-foreground">
+                    <History className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                    <p className="mb-2">Payment details coming soon</p>
+                    <p className="text-xs">
+                      Contract needs <code className="px-2 py-1 bg-muted rounded text-xs">list_payments()</code> method
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12 text-muted-foreground">
+                  <History className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No payments received yet</p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

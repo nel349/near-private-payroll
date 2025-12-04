@@ -44,6 +44,11 @@ async function rpcCall(method: string, params: any[] = []) {
     if (error.code === 'ECONNREFUSED') {
       throw new Error('Zcash RPC not available. Make sure Zallet is running.');
     }
+    // Log the full error response for debugging
+    if (error.response?.data) {
+      console.error('[RPC] Error response:', JSON.stringify(error.response.data, null, 2));
+      throw new Error(`RPC error: ${JSON.stringify(error.response.data)}`);
+    }
     throw error;
   }
 }
@@ -71,10 +76,10 @@ export async function POST(request: NextRequest) {
     console.log(`  Amount: ${amount} ZEC`);
     console.log(`  Company: ${companyId}`);
 
-    // Get first address with funds from user wallet
+    // Get unspent outputs from user wallet
     const unspent = await rpcCall('z_listunspent', [0, 9999999]);
 
-    if (!unspent || unspent.length === 0 || !unspent[0].address) {
+    if (!unspent || unspent.length === 0) {
       return NextResponse.json(
         {
           error: 'No funds available in Zcash wallet. Please fund the user wallet first.',
@@ -84,7 +89,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const fromAddr = unspent[0].address;
+    // Filter for Sapling addresses only (ztestsapling... on testnet)
+    // Orchard addresses cannot send yet in Zallet
+    const saplingUnspent = unspent.filter((u: any) =>
+      u.address && u.address.startsWith('ztestsapling')
+    );
+
+    if (saplingUnspent.length === 0) {
+      return NextResponse.json(
+        {
+          error: 'No Sapling funds available. Only Sapling addresses can send.',
+          details: 'Zallet currently only supports sending from Sapling addresses (ztestsapling...)'
+        },
+        { status: 503 }
+      );
+    }
+
+    const fromAddr = saplingUnspent[0].address;
 
     // Get custody address from environment or use hardcoded testnet address
     const custodyAddr = process.env.BRIDGE_CUSTODY_ADDRESS ||
@@ -100,6 +121,7 @@ export async function POST(request: NextRequest) {
     console.log(`  Memo: ${memoText}`);
 
     // Send ZEC to bridge custody address
+    // Privacy policy required when spending across pools (Orchard → Sapling/Unified)
     const opid = await rpcCall('z_sendmany', [
       fromAddr,
       [
@@ -109,6 +131,9 @@ export async function POST(request: NextRequest) {
           memo: memoHex,
         },
       ],
+      1, // minconf
+      null, // fee (Zallet calculates internally)
+      'AllowRevealedAmounts', // privacy policy
     ]);
 
     console.log('[Bridge API] Operation started:', opid);

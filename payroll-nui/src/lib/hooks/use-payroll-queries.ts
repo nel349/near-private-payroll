@@ -29,6 +29,8 @@ export const payrollKeys = {
     [...payrollKeys.company(contractId), "stats"] as const,
   companyEmployees: (contractId: string) =>
     [...payrollKeys.company(contractId), "employees"] as const,
+  companyPayments: (contractId: string) =>
+    [...payrollKeys.company(contractId), "payments"] as const,
   companyPublicKey: (contractId: string) =>
     [...payrollKeys.company(contractId), "public-key"] as const,
   employee: (contractId: string, employeeId: string) =>
@@ -226,6 +228,87 @@ export function useCompanyEmployees(
       }
 
       return [];
+    },
+    enabled: !!contractAddress,
+  });
+}
+
+/**
+ * Query all payments made by the company
+ * Aggregates payments from all employees
+ */
+export function useCompanyPayments(contractAddress?: string) {
+  const { viewFunction } = useWalletSelector();
+
+  return useQuery({
+    queryKey: payrollKeys.companyPayments(contractAddress || ""),
+    queryFn: async () => {
+      if (!contractAddress) throw new Error("Contract address is required");
+
+      console.log("[useCompanyPayments] Fetching all payments for:", contractAddress);
+
+      // First, get all employees
+      const employeesResult = await viewFunction({
+        contractId: contractAddress,
+        method: "list_employees",
+        args: {
+          from_index: 0,
+          limit: 100,
+        },
+      });
+
+      if (!Array.isArray(employeesResult)) {
+        return [];
+      }
+
+      // Fetch payments for each employee
+      const allPayments: any[] = [];
+
+      for (const emp of employeesResult) {
+        const employeeId = emp[0];
+
+        try {
+          const payments: any = await viewFunction({
+            contractId: contractAddress,
+            method: "list_payments",
+            args: {
+              employee_id: employeeId,
+              from_index: 0,
+              limit: 100,
+            },
+          });
+
+          if (Array.isArray(payments)) {
+            payments.forEach((payment: any) => {
+              const [timestamp, encrypted_amount, commitment, period] = payment;
+
+              // Decode amount from plaintext bytes
+              const amountBytes = new Uint8Array(encrypted_amount);
+              const amount = new TextDecoder().decode(amountBytes);
+
+              allPayments.push({
+                employeeId,
+                employeeName: employeeId, // Will be decrypted in UI if needed
+                timestamp,
+                amount,
+                period,
+                commitment,
+              });
+            });
+          }
+        } catch (error) {
+          console.warn(
+            "[useCompanyPayments] Failed to fetch payments for:",
+            employeeId,
+            error
+          );
+        }
+      }
+
+      // Sort by timestamp descending (newest first)
+      allPayments.sort((a, b) => b.timestamp - a.timestamp);
+
+      return allPayments;
     },
     enabled: !!contractAddress,
   });

@@ -42,6 +42,10 @@ interface WZecContractMethods {
   }) => Promise<string>;
   ft_balance_of: (args: { account_id: string }) => Promise<string>;
   ft_total_supply: () => Promise<string>;
+  storage_deposit: (args: {
+    account_id?: string;
+    registration_only?: boolean;
+  }) => Promise<void>;
 
   // View methods
   get_bridge_controller: () => Promise<string>;
@@ -79,6 +83,7 @@ export class WZecToken {
         'transfer_ownership',
         'ft_transfer',
         'ft_transfer_call',
+        'storage_deposit',
       ],
       useLocalViewExecution: false,
     }) as Contract & WZecContractMethods;
@@ -199,12 +204,21 @@ export class WZecToken {
     msg: string,
     memo?: string
   ): Promise<string> {
-    return this.contract.ft_transfer_call({
-      receiver_id: receiverId,
-      amount,
-      msg,
-      memo,
+    // Use account.functionCall for proper new-style API
+    const result = await this.account.functionCall({
+      contractId: this.contract.contractId,
+      methodName: 'ft_transfer_call',
+      args: {
+        receiver_id: receiverId,
+        amount,
+        msg,
+        memo,
+      },
+      gas: BigInt('300000000000000'), // 300 TGas
+      attachedDeposit: BigInt('1'), // 1 yoctoNEAR
     });
+
+    return result.transaction.hash;
   }
 
   /**
@@ -213,6 +227,29 @@ export class WZecToken {
    */
   async depositToPayroll(payrollContractId: string, amount: string): Promise<string> {
     return this.transferCall(payrollContractId, amount, 'deposit');
+  }
+
+  /**
+   * Register an account with the wZEC token
+   * Required before account can receive wZEC (NEP-141 storage deposit)
+   *
+   * @param accountId - Account to register (defaults to caller)
+   * @param registrationOnly - If true, only covers storage for registration (default)
+   */
+  async storageDeposit(
+    accountId?: string,
+    registrationOnly: boolean = true
+  ): Promise<void> {
+    await this.account.functionCall({
+      contractId: this.contract.contractId,
+      methodName: 'storage_deposit',
+      args: {
+        account_id: accountId,
+        registration_only: registrationOnly,
+      },
+      gas: BigInt('30000000000000'), // 30 TGas
+      attachedDeposit: BigInt('1250000000000000000000'), // 0.00125 NEAR
+    });
   }
 
   // ==================== VIEW METHODS ====================

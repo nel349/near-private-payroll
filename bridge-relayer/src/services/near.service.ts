@@ -60,20 +60,47 @@ export class NearService {
 
   /**
    * Mint wZEC for a deposit
+   * Mints to relayer, then transfers to payroll contract with "deposit" message
    */
   async mintForDeposit(deposit: DepositEvent): Promise<void> {
     const amountStr = deposit.amountZat.toString();
 
-    console.log(`  Minting ${amountStr} wZEC units (${deposit.amount} ZEC)...`);
+    console.log(`  Minting ${amountStr} wZEC units (${deposit.amount} ZEC) to relayer...`);
 
     try {
+      // Step 1: Mint to relayer account
       await this.wzec.mint(
-        deposit.receiverId,
+        this.relayerAccountId,
         amountStr,
         deposit.txid
       );
+
+      console.log(`  Registering ${deposit.receiverId} with wZEC token if needed...`);
+
+      // Step 2: Ensure payroll contract is registered with wZEC
+      try {
+        await this.wzec.storageDeposit(deposit.receiverId);
+        console.log(`  ✅ Registered ${deposit.receiverId} with wZEC`);
+      } catch (error: any) {
+        // Ignore if already registered
+        if (!error.message.includes('already registered')) {
+          console.warn(`  Warning: Storage deposit failed: ${error.message}`);
+        }
+      }
+
+      console.log(`  Depositing ${amountStr} wZEC to payroll contract ${deposit.receiverId}...`);
+
+      // Step 3: Transfer to payroll contract with "deposit" message
+      await this.wzec.transferCall(
+        deposit.receiverId,
+        amountStr,
+        "deposit",
+        `Deposit from bridge for txid: ${deposit.txid}`
+      );
+
+      console.log(`  ✅ Successfully deposited ${deposit.amount} ZEC to ${deposit.receiverId}`);
     } catch (error: any) {
-      throw new Error(`Minting failed: ${error.message}`);
+      throw new Error(`Deposit failed: ${error.message}`);
     }
   }
 

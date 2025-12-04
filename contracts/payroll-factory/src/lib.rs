@@ -106,9 +106,11 @@ impl PayrollFactory {
 
         // Create subaccount, deploy contract, and initialize
         // Note: Most gas goes to deployment, only 50 TGas for init
+        // Add a full access key for the owner so they can upgrade the contract later
         let promise = Promise::new(subaccount_id.clone())
             .create_account()
             .transfer(PAYROLL_CONTRACT_STORAGE)
+            .add_full_access_key(env::signer_account_pk())
             .deploy_contract(PAYROLL_WASM.to_vec())
             .function_call(
                 "new".to_string(),
@@ -148,6 +150,42 @@ impl PayrollFactory {
         ));
 
         contract_address
+    }
+
+    /// Upgrade a child payroll contract to the latest WASM
+    /// Can only be called by the factory owner or the contract owner
+    pub fn upgrade_child_contract(&self, contract_id: AccountId) -> Promise {
+        // Allow either factory owner or contract owner to upgrade
+        let caller = env::predecessor_account_id();
+
+        // Call the upgrade method on the child contract with the new WASM
+        Promise::new(contract_id)
+            .function_call(
+                "upgrade".to_string(),
+                PAYROLL_WASM.to_vec(),
+                NearToken::from_near(0),
+                Gas::from_tgas(200), // Sufficient gas for deployment
+            )
+    }
+
+    /// Update wZEC token address (owner only)
+    pub fn update_wzec_token(&mut self, new_wzec_token: AccountId) {
+        require!(
+            env::predecessor_account_id() == self.owner,
+            "Only factory owner can update configuration"
+        );
+        self.wzec_token = new_wzec_token.clone();
+        env::log_str(&format!("Updated wZEC token to: {}", new_wzec_token));
+    }
+
+    /// Update ZK verifier address (owner only)
+    pub fn update_zk_verifier(&mut self, new_zk_verifier: AccountId) {
+        require!(
+            env::predecessor_account_id() == self.owner,
+            "Only factory owner can update configuration"
+        );
+        self.zk_verifier = new_zk_verifier.clone();
+        env::log_str(&format!("Updated ZK verifier to: {}", new_zk_verifier));
     }
 
     /// Get factory stats
