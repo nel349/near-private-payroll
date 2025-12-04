@@ -1630,6 +1630,35 @@ impl PayrollContract {
             .unwrap_or(false)
     }
 
+    /// Withdraw NEAR from contract to owner (admin only)
+    /// Useful for recovering deposited NEAR or deleting the contract
+    pub fn withdraw_near(&mut self, amount: Option<U128>) -> Promise {
+        self.assert_owner();
+
+        let withdraw_amount = if let Some(amt) = amount {
+            near_sdk::NearToken::from_yoctonear(amt.0)
+        } else {
+            // Withdraw all but keep 1 NEAR for storage
+            let balance = env::account_balance();
+            let storage_reserve = near_sdk::NearToken::from_near(1);
+            near_sdk::NearToken::from_yoctonear(
+                balance.as_yoctonear().saturating_sub(storage_reserve.as_yoctonear())
+            )
+        };
+
+        env::log_str(&format!(
+            "Withdrawing {} yoctoNEAR to owner {}",
+            withdraw_amount.as_yoctonear(), self.owner
+        ));
+
+        Promise::new(self.owner.clone()).transfer(withdraw_amount)
+    }
+
+    /// Get contract owner
+    pub fn get_owner(&self) -> AccountId {
+        self.owner.clone()
+    }
+
     // ==================== VIEW METHODS ====================
 
     /// Get employee info (public fields only)

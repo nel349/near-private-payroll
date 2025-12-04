@@ -127,9 +127,9 @@ export class NearService {
       const withdrawals: WithdrawalEvent[] = [];
 
       // Get current nonce
-      console.log('  📊 Querying current withdrawal nonce...');
+      // console.log('  📊 Querying current withdrawal nonce...');
       const currentNonce = await this.wzec.getWithdrawalNonce();
-      console.log(`  📊 Current nonce: ${currentNonce}`);
+      // console.log(`  📊 Current nonce: ${currentNonce}`);
       const lastProcessedNonce = processedNonces.length > 0
         ? Math.max(...processedNonces)
         : 0;
